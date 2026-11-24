@@ -50,7 +50,7 @@ cargo run
 前端和 Rust 后端完全分离，位于 `web-app/`。可用任意静态文件服务器运行，例如：
 
 ```sh
-python3 -m http.server 5173 --directory web-app
+python -m http.server 5173 --directory web-app
 ```
 
 打开 `http://127.0.0.1:5173`，设置 WebSocket 地址
@@ -62,3 +62,35 @@ python3 -m http.server 5173 --directory web-app
 `tool_result` 和 `status` 事件显示为回复、折叠思考块和工具卡片。事件定义来自
 [`packages/bundle/headless/src/json-stream.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/bundle/headless/src/json-stream.ts)。
 思考内容是否出现取决于模型/provider；dsh 的文本和思考事件在步骤提交后发出，并非逐 token 流式输出。
+
+## Python 客户端
+
+安装 WebSocket 依赖后，可从命令行发送 prompt。API Key 是 `tenants.json` 顶层的租户
+`api_key`；也可以通过 `DSH_API_KEY` 环境变量提供：
+
+```sh
+uv pip install websockets
+python client.py --api-key sk-tenant-a "帮我查一下明天北京的天气"
+```
+
+客户端会在标准错误输出中显示服务端分配的 `session_id`，可用它继续已有会话；这里的
+`session_id` 是桥接服务 ID，不是 dsh 原生 session ID。终端交互模式会保持 WebSocket 连接，
+agent 返回后可直接输入补充信息、确认或审批内容；agent 处理期间输入的内容也会排队发送。
+非交互调用默认只执行一次，可用 `--once` 显式指定；`--interactive` 可在重定向的标准输入上
+持续读取后续内容。prompt 也可以从标准输入读取：
+
+```sh
+python client.py --api-key sk-tenant-a --session_id <session-id> "继续刚才的话题"
+printf '%s' '总结当前任务' | DSH_API_KEY=sk-tenant-a python client.py
+# 不发送 prompt，回放已有事件并持续监听 session
+python client.py --api-key sk-tenant-a --session_id <session-id>
+```
+
+在交互提示符输入 `/quit` 会通知服务端销毁当前 session、停止其 dsh 后端并退出客户端。
+销毁后再次使用该 `session_id` 会创建一个新的服务端 session。
+
+默认服务地址为 `ws://127.0.0.1:8080/api/remote.mux`，可用 `--url` 覆盖；增加
+`--session_id` 且不传 prompt 时会回放历史事件并持续监听，也可在终端输入新的 prompt；
+按 Ctrl+C 退出。思考过程、
+工具调用和结果默认显示在标准错误输出；终端默认使用颜色，可通过 `--color always|never`
+覆盖。`--verbose` 还会显示状态事件；`--after-event-id` 可从指定事件之后开始回放。

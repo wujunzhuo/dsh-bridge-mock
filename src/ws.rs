@@ -44,6 +44,9 @@ pub async fn ws_handler(
         }
         Err(error) => return (StatusCode::BAD_GATEWAY, error).into_response(),
     };
+    let session_state = state.clone();
+    let session_tenant = tenant_id.clone();
+    let session_id_for_close = session_id.clone();
 
     ws.on_upgrade(move |socket| async move {
         let (mut sink, mut stream) = socket.split();
@@ -95,7 +98,27 @@ pub async fn ws_handler(
                 continue;
             };
 
-            if frame.method.as_deref() == Some("session.attachment") {
+            if frame.method.as_deref() == Some("session.close") {
+                match session_state
+                    .destroy_session(&session_tenant, &session_id_for_close)
+                    .await
+                {
+                    Ok(()) => {
+                        backend.publish(RpcFrame::notification(
+                            "session.closed",
+                            serde_json::json!({"session_id": session_id_for_close}),
+                        ));
+                        backend.publish(RpcFrame::response(
+                            frame.id,
+                            serde_json::json!({
+                                "closed": true,
+                                "session_id": session_id_for_close,
+                            }),
+                        ));
+                    }
+                    Err(error) => backend.publish(RpcFrame::error(frame.id, error)),
+                }
+            } else if frame.method.as_deref() == Some("session.attachment") {
                 let after = frame
                     .params
                     .as_ref()

@@ -70,4 +70,20 @@ impl AppState {
         );
         Ok(backend)
     }
+
+    pub async fn destroy_session(&self, tenant_id: &str, session_id: &str) -> Result<(), String> {
+        let session = {
+            let mut sessions = self.sessions.write().await;
+            let Some(session) = sessions.get(session_id) else {
+                return Err(format!("unknown session {session_id}"));
+            };
+            if session.tenant_id != tenant_id {
+                return Err("session belongs to another tenant".into());
+            }
+            sessions.remove(session_id).expect("session was checked above")
+        };
+
+        session.backend.shutdown().await;
+        Ok(())
+    }
 }
