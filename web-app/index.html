@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>DeepSeek Harness · 对话</title>
+  <style>
+    :root {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #e8eaf0;
+      background: #101116;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+      --muted: #9699a8;
+      --line: #292b35;
+      --panel: #17181f;
+      --accent: #a6e3a1;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    button, input, textarea { font: inherit; }
+    .shell { min-height: 100vh; display: flex; flex-direction: column; max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+    header { height: 76px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 650; letter-spacing: .01em; }
+    .mark { display: grid; place-items: center; width: 34px; height: 34px; color: #101116; background: var(--accent); border-radius: 11px; font-size: 19px; }
+    .brand small { display: block; margin-top: 3px; color: var(--muted); font-weight: 450; font-size: 11px; letter-spacing: .04em; }
+    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .status { color: var(--muted); font-size: 12px; }
+    .status::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #777985; }
+    .status.ready::before { background: var(--accent); }
+    button { border: 1px solid var(--line); color: #d8dae3; background: #1b1c24; border-radius: 9px; padding: 9px 13px; cursor: pointer; transition: .15s ease; }
+    button:hover { border-color: #555866; background: #22242d; }
+    button:disabled { opacity: .55; cursor: wait; }
+    main { flex: 1; display: flex; flex-direction: column; width: 100%; max-width: 780px; margin: 0 auto; }
+    .intro { text-align: center; padding: clamp(44px, 10vh, 100px) 0 34px; }
+    .intro .spark { font-size: 28px; color: var(--accent); }
+    h1 { margin: 13px 0 9px; font-size: clamp(25px, 4vw, 34px); font-weight: 620; letter-spacing: -.035em; }
+    .intro p { margin: 0; color: var(--muted); font-size: 14px; }
+    #messages { flex: 1; padding: 4px 0 24px; }
+    .message { display: flex; gap: 13px; margin: 22px 0; align-items: flex-start; animation: enter .18s ease-out; }
+    @keyframes enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    .avatar { flex: 0 0 31px; height: 31px; display: grid; place-items: center; border-radius: 10px; background: #252731; color: #b7bac8; font-size: 13px; }
+    .message.assistant .avatar { color: #11140f; background: var(--accent); }
+    .message-body { min-width: 0; flex: 1; padding-top: 3px; }
+    .role { color: #9b9eab; font-size: 11px; margin-bottom: 7px; }
+    .content { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: 14px; }
+    .message.user .content { color: #f0f0f4; }
+    .message.error .content { color: #f38ba8; }
+    .meta { margin-top: 9px; color: #777a88; font-size: 10px; }
+    .activity-list { display: grid; gap: 8px; margin: 3px 0 10px; }
+    .reasoning-card, .tool-card { border: 1px solid #30323c; border-radius: 9px; background: #15161c; color: #b6b8c4; font-size: 12px; }
+    .reasoning-card summary, .tool-card summary { cursor: pointer; padding: 9px 11px; color: #aeb1bf; }
+    .reasoning-card[open] summary, .tool-card[open] summary { border-bottom: 1px solid #292b35; }
+    .event-body { padding: 9px 11px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; color: #a5a8b5; }
+    .event-body + .event-body { border-top: 1px solid #292b35; }
+    .tool-state { color: var(--muted); }
+    .tool-state.error { color: #f38ba8; }
+    .thinking { display: inline-flex; gap: 5px; padding: 9px 0; }
+    .thinking i { width: 5px; height: 5px; border-radius: 50%; background: #a6e3a1; opacity: .45; animation: pulse 1s ease-in-out infinite; }
+    .thinking i:nth-child(2) { animation-delay: .15s; }
+    .thinking i:nth-child(3) { animation-delay: .3s; }
+    @keyframes pulse { 50% { opacity: 1; transform: translateY(-3px); } }
+    .composer-wrap { position: sticky; bottom: 0; padding: 12px 0 20px; background: linear-gradient(transparent, #101116 16%); }
+    .composer { border: 1px solid #363844; background: var(--panel); border-radius: 15px; padding: 12px 13px 10px 16px; box-shadow: 0 14px 40px #0003; }
+    textarea { display: block; width: 100%; min-height: 52px; max-height: 190px; resize: none; border: 0; outline: 0; color: #e8eaf0; background: transparent; line-height: 1.55; font-size: 14px; }
+    textarea::placeholder { color: #747785; }
+    .composer-bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .hint { color: #777a88; font-size: 10px; }
+    .send { display: inline-flex; align-items: center; gap: 8px; background: var(--accent); border-color: var(--accent); color: #10140e; padding: 8px 12px; font-size: 12px; font-weight: 650; }
+    .send:hover { background: #b7f0b2; border-color: #b7f0b2; }
+    .send:disabled { color: #10140e; }
+    footer { padding: 0 0 15px; text-align: center; color: #696c78; font-size: 10px; }
+    dialog { width: min(440px, calc(100vw - 32px)); padding: 0; border: 1px solid #383a45; border-radius: 14px; color: #e8eaf0; background: #191a21; box-shadow: 0 24px 90px #0009; }
+    dialog::backdrop { background: #05060ab8; backdrop-filter: blur(4px); }
+    .dialog-inner { padding: 22px; }
+    .dialog-inner h2 { margin: 0 0 8px; font-size: 17px; }
+    .dialog-inner p { margin: 0 0 18px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .dialog-inner label { display: block; margin-bottom: 7px; color: #c7c9d3; font-size: 12px; }
+    .dialog-inner input { width: 100%; padding: 11px 12px; border: 1px solid #393b46; border-radius: 8px; outline: 0; color: #eee; background: #111218; }
+    .dialog-inner input:focus { border-color: #7d9d79; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+    .primary { color: #11140f; background: var(--accent); border-color: var(--accent); font-weight: 650; }
+    @media (max-width: 600px) {
+      .shell { padding: 0 15px; }
+      header { height: 64px; }
+      .brand small { display: none; }
+      .status { display: none; }
+      .intro { padding-top: 55px; }
+      .hint { max-width: 60%; line-height: 1.4; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand"><div class="mark">✳</div><div>DeepSeek Harness<small>多租户会话示例</small></div></div>
+      <div class="header-actions">
+        <span class="status" id="status">未连接</span>
+        <button id="settingsButton" type="button" title="设置 API Key">设置</button>
+        <button id="newChatButton" type="button">新对话</button>
+      </div>
+    </header>
+    <main>
+      <section class="intro" id="intro">
+        <div class="spark">✳</div>
+        <h1>今天有什么可以帮你？</h1>
+        <p>通过 DeepSeek Harness 开始一段新的对话</p>
+      </section>
+      <section id="messages" aria-live="polite" aria-label="对话消息"></section>
+      <div class="composer-wrap">
+        <form class="composer" id="chatForm">
+          <textarea id="prompt" rows="2" placeholder="给 DeepSeek Harness 发消息…" aria-label="消息内容"></textarea>
+          <div class="composer-bottom">
+            <span class="hint">Enter 发送 · Shift + Enter 换行</span>
+            <button class="send" id="sendButton" type="submit"><span>发送</span><span aria-hidden="true">↑</span></button>
+          </div>
+        </form>
+      </div>
+    </main>
+    <footer>前端独立运行；API Key 通过 WebSocket URL 发送给 Rust 服务</footer>
+  </div>
+
+  <dialog id="settingsDialog">
+    <form class="dialog-inner" id="settingsForm">
+      <h2>连接设置</h2>
+      <p>填写 Rust 服务的 WebSocket 地址，以及 <code>tenants.json</code> 顶层 <code>api_key</code>（不是 <code>llm.api_key</code>）。</p>
+      <label for="backendUrl">WebSocket URL</label>
+      <input id="backendUrl" type="text" inputmode="url" autocomplete="url" spellcheck="false" placeholder="ws://127.0.0.1:8080/api/remote.mux" required>
+      <div style="height: 14px"></div>
+      <label for="apiKey">API Key</label>
+      <input id="apiKey" type="password" autocomplete="off" placeholder="例如 sk-tenant-a" required>
+      <div class="dialog-actions">
+        <button id="cancelSettings" type="button">取消</button>
+        <button class="primary" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module">
+    // MIT-licensed, dependency-free JSON-RPC client/server for the browser.
+    import {
+      JSONRPCClient,
+      JSONRPCServer,
+      JSONRPCServerAndClient
+    } from 'https://esm.sh/json-rpc-2.0@1.7.1?bundle';
+
+    (() => {
+      const $ = (selector) => document.querySelector(selector);
+      const form = $('#chatForm');
+      const prompt = $('#prompt');
+      const messages = $('#messages');
+      const status = $('#status');
+      const sendButton = $('#sendButton');
+      const dialog = $('#settingsDialog');
+      const apiKeyInput = $('#apiKey');
+      const backendUrlInput = $('#backendUrl');
+      const storage = {
+        get key() { return localStorage.getItem('dsh-demo-api-key') || ''; },
+        set key(value) { localStorage.setItem('dsh-demo-api-key', value); },
+        get endpoint() {
+          return localStorage.getItem('dsh-demo-ws-url') ||
+            `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8080/api/remote.mux`;
+        },
+        set endpoint(value) { localStorage.setItem('dsh-demo-ws-url', value); },
+        get session() { return localStorage.getItem('dsh-demo-session-id') || ''; },
+        set session(value) { localStorage.setItem('dsh-demo-session-id', value); }
+      };
+      let connection = null;
+      let opening = null;
+      let openingSocket = null;
+      let activeReply = null;
+
+      function setStatus(text, ready = false) {
+        status.textContent = text;
+        status.classList.toggle('ready', ready);
+      }
+
+      function addMessage(role, text, meta = '') {
+        $('#intro').hidden = true;
+        const article = document.createElement('article');
+        article.className = `message ${role}`;
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar';
+        avatar.textContent = role === 'assistant' ? '✳' : '你';
+        const body = document.createElement('div');
+        body.className = 'message-body';
+        const label = document.createElement('div');
+        label.className = 'role';
+        label.textContent = role === 'assistant' ? 'DeepSeek Harness' : role === 'error' ? '请求失败' : '你';
+        const content = document.createElement('div');
+        content.className = 'content';
+        content.textContent = text;
+        body.append(label, content);
+        if (meta) {
+          const detail = document.createElement('div');
+          detail.className = 'meta';
+          detail.textContent = meta;
+          body.append(detail);
+        }
+        article.append(avatar, body);
+        messages.append(article);
+        article.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        return article;
+      }
+
+      function beginAssistantReply() {
+        const article = addMessage('assistant', '');
+        const body = article.querySelector('.message-body');
+        const content = article.querySelector('.content');
+        content.hidden = true;
+        const activity = document.createElement('div');
+        activity.className = 'activity-list';
+        const progress = document.createElement('div');
+        progress.className = 'thinking';
+        progress.setAttribute('aria-label', '正在处理');
+        progress.innerHTML = '<i></i><i></i><i></i>';
+        activity.append(progress);
+        body.insertBefore(activity, content);
+        return { article, body, content, activity, progress, text: '', tools: new Map() };
+      }
+
+      function stopProgress(reply) {
+        reply.progress?.remove();
+        reply.progress = null;
+      }
+
+      function appendEventText(node, text) {
+        const chunk = document.createElement('div');
+        chunk.className = 'event-body';
+        chunk.textContent = text;
+        node.append(chunk);
+      }
+
+      function handleSessionEvent(params) {
+        const sessionEvent = params;
+        if (!activeReply || sessionEvent?.payload?.session_id !== storage.session) return;
+        const event = sessionEvent.payload?.event;
+        if (!event || typeof event !== 'object') return;
+
+        switch (event.type) {
+          case 'thinking': {
+            stopProgress(activeReply);
+            let card = activeReply.activity.querySelector('.reasoning-card');
+            if (!card) {
+              card = document.createElement('details');
+              card.className = 'reasoning-card';
+              const summary = document.createElement('summary');
+              summary.textContent = '思考过程';
+              card.append(summary);
+              activeReply.activity.append(card);
+            }
+            appendEventText(card, String(event.text || ''));
+            setStatus('正在思考…', true);
+            break;
+          }
+          case 'text':
+            stopProgress(activeReply);
+            activeReply.text += String(event.text || '');
+            activeReply.content.hidden = false;
+            activeReply.content.textContent = activeReply.text;
+            setStatus('正在生成回复…', true);
+            break;
+          case 'tool_call': {
+            stopProgress(activeReply);
+            const id = String(event.callId || `tool-${activeReply.tools.size}`);
+            const card = document.createElement('details');
+            card.className = 'tool-card';
+            const summary = document.createElement('summary');
+            const toolName = String(event.tool || 'tool');
+            summary.textContent = `调用工具：${toolName} · 运行中`;
+            const state = document.createElement('div');
+            state.className = 'event-body tool-state';
+            state.textContent = '正在执行';
+            card.append(summary);
+            if (event.input !== undefined) {
+              appendEventText(card, typeof event.input === 'string'
+                ? event.input
+                : JSON.stringify(event.input, null, 2));
+            }
+            card.append(state);
+            activeReply.activity.append(card);
+            const queue = activeReply.tools.get(id) || [];
+            queue.push({ summary, state });
+            activeReply.tools.set(id, queue);
+            setStatus(`正在调用 ${toolName}…`, true);
+            break;
+          }
+          case 'tool_result': {
+            const id = String(event.callId || '');
+            const queue = activeReply.tools.get(id) || [];
+            const call = queue.shift();
+            if (queue.length) activeReply.tools.set(id, queue);
+            else activeReply.tools.delete(id);
+            if (call) {
+              const failed = event.status === 'error';
+              call.summary.textContent = `${call.summary.textContent.replace(/ · 运行中$/, '')} · ${failed ? '失败' : '完成'}`;
+              call.state.classList.toggle('error', failed);
+              call.state.textContent = failed ? '工具返回错误' : '执行完成';
+              if (event.result) appendEventText(call.state.parentElement, String(event.result));
+              if (event.error) appendEventText(call.state.parentElement, JSON.stringify(event.error, null, 2));
+            }
+            setStatus('继续处理…', true);
+            break;
+          }
+          case 'status':
+            if (event.phase === 'step_start') setStatus(`执行步骤 ${event.step ?? ''}…`, true);
+            else if (event.phase === 'turn_start') setStatus('开始处理…', true);
+            break;
+          case 'final':
+            if (typeof event.text === 'string') {
+              activeReply.text = event.text;
+              activeReply.content.hidden = !event.text;
+              activeReply.content.textContent = event.text;
+            }
+            break;
+          default:
+            break;
+        }
+      }
+
+      function finishAssistantReply(reply, answer, meta) {
+        stopProgress(reply);
+        if (answer) {
+          reply.content.hidden = false;
+          reply.content.textContent = answer;
+        }
+        if (meta) {
+          const detail = document.createElement('div');
+          detail.className = 'meta';
+          detail.textContent = meta;
+          reply.body.append(detail);
+        }
+      }
+
+      function transcriptKey() {
+        return `dsh-demo-transcript:${storage.session}`;
+      }
+      function saveMessage(role, text, meta = '') {
+        let items = [];
+        try { items = JSON.parse(localStorage.getItem(transcriptKey()) || '[]'); } catch (_) {}
+        items.push({ role, text, meta });
+        localStorage.setItem(transcriptKey(), JSON.stringify(items.slice(-100)));
+      }
+      function restoreTranscript() {
+        let items = [];
+        try { items = JSON.parse(localStorage.getItem(transcriptKey()) || '[]'); } catch (_) {}
+        for (const item of items) addMessage(item.role, item.text, item.meta || '');
+      }
+
+      function websocketUrl() {
+        if (!storage.session) storage.session = crypto.randomUUID();
+        const url = new URL(storage.endpoint);
+        if (url.protocol !== 'ws:' && url.protocol !== 'wss:') {
+          throw new Error('WebSocket URL 必须以 ws:// 或 wss:// 开头');
+        }
+        url.searchParams.set('api_key', storage.key);
+        url.searchParams.set('session_id', storage.session);
+        return url.toString();
+      }
+
+      function connect() {
+        if (connection?.socket.readyState === WebSocket.OPEN) return Promise.resolve(connection);
+        if (opening) return opening;
+        if (!storage.key) throw new Error('请先设置租户 API Key');
+
+        const socket = new WebSocket(websocketUrl());
+        const client = new JSONRPCClient((request) => {
+          if (socket.readyState !== WebSocket.OPEN) {
+            return Promise.reject(new Error('WebSocket 尚未连接'));
+          }
+          socket.send(JSON.stringify(request));
+        });
+        const server = new JSONRPCServer({
+          errorListener: (message, error) => console.warn(message, error)
+        });
+        const rpc = new JSONRPCServerAndClient(server, client);
+        rpc.addMethod('session.event', handleSessionEvent);
+
+        socket.addEventListener('message', (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            void rpc.receiveAndSend(message).catch((error) => {
+              console.warn('JSON-RPC message error:', error);
+            });
+          } catch (error) {
+            console.warn('Invalid JSON-RPC message:', error);
+          }
+        });
+        socket.addEventListener('close', (event) => {
+          rpc.rejectAllPendingRequests(`WebSocket closed (${event.code})`);
+          if (connection?.socket === socket) {
+            connection = null;
+            setStatus('连接已断开');
+          }
+        });
+
+        openingSocket = socket;
+        const attempt = new Promise((resolve, reject) => {
+          socket.addEventListener('open', () => {
+            connection = { socket, rpc };
+            setStatus('已连接', true);
+            resolve(connection);
+          }, { once: true });
+          socket.addEventListener('error', () => {
+            setStatus('WebSocket 握手失败；请检查服务地址和租户 API Key');
+          }, { once: true });
+          socket.addEventListener('close', (event) => {
+            reject(new Error(
+              `WebSocket 连接失败 (${event.code})。请确认后端可访问，并使用 tenants.json 顶层 api_key。`
+            ));
+          }, { once: true });
+        });
+        opening = attempt;
+        attempt.then(() => {
+          if (opening === attempt) {
+            opening = null;
+            openingSocket = null;
+          }
+        }, () => {
+          if (opening === attempt) {
+            opening = null;
+            openingSocket = null;
+          }
+          if (socket.readyState < WebSocket.CLOSING) socket.close();
+        });
+        return opening;
+      }
+
+      async function closeConnection() {
+        const current = connection;
+        const pendingSocket = openingSocket;
+        connection = null;
+        opening = null;
+        openingSocket = null;
+        if (current) {
+          current.rpc.rejectAllPendingRequests('WebSocket connection reset');
+          current.socket.close();
+        } else if (pendingSocket && pendingSocket.readyState < WebSocket.CLOSING) {
+          pendingSocket.close();
+        }
+      }
+
+      $('#settingsButton').addEventListener('click', () => {
+        apiKeyInput.value = storage.key;
+        backendUrlInput.value = storage.endpoint;
+        dialog.showModal();
+        backendUrlInput.focus();
+      });
+      $('#cancelSettings').addEventListener('click', () => dialog.close());
+      $('#settingsForm').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const nextKey = apiKeyInput.value.trim();
+        const nextEndpoint = backendUrlInput.value.trim();
+        if (!/^wss?:\/\/[^\s/]+(?:\/[^\s]*)?$/i.test(nextEndpoint)) {
+          backendUrlInput.setCustomValidity('请输入有效的 WebSocket URL，例如 ws://localhost:8080/api/remote.mux');
+          backendUrlInput.reportValidity();
+          return;
+        }
+        backendUrlInput.setCustomValidity('');
+        if (nextKey !== storage.key || nextEndpoint !== storage.endpoint) {
+          void closeConnection();
+          storage.session = '';
+          messages.replaceChildren();
+          $('#intro').hidden = false;
+        }
+        storage.key = nextKey;
+        storage.endpoint = nextEndpoint;
+        dialog.close();
+        setStatus('API Key 已保存', true);
+        prompt.focus();
+      });
+      $('#newChatButton').addEventListener('click', () => {
+        void closeConnection();
+        storage.session = '';
+        messages.replaceChildren();
+        $('#intro').hidden = false;
+        setStatus('新对话', true);
+        prompt.focus();
+      });
+
+      prompt.addEventListener('input', () => {
+        prompt.style.height = 'auto';
+        prompt.style.height = `${Math.min(prompt.scrollHeight, 190)}px`;
+      });
+      prompt.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          form.requestSubmit();
+        }
+      });
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const text = prompt.value.trim();
+        if (!text) return;
+        if (!storage.key) {
+          $('#settingsButton').click();
+          return;
+        }
+
+        addMessage('user', text);
+        saveMessage('user', text);
+        prompt.value = '';
+        prompt.style.height = 'auto';
+        sendButton.disabled = true;
+        setStatus('正在连接…');
+        const reply = beginAssistantReply();
+        activeReply = reply;
+
+        try {
+          const client = await connect();
+          const result = await client.rpc.request('session.prompt', { prompt: text });
+          const meta = [
+            result.process_id ? `process ${result.process_id}` : '',
+            result.dsh_session_id ? `session ${result.dsh_session_id}` : ''
+          ].filter(Boolean).join(' · ');
+          const answer = result.answer || '任务已完成，但没有返回文本。';
+          finishAssistantReply(reply, answer, meta);
+          saveMessage('assistant', answer, meta);
+          activeReply = null;
+          setStatus('已连接', true);
+        } catch (error) {
+          stopProgress(reply);
+          activeReply = null;
+          addMessage('error', error instanceof Error ? error.message : String(error));
+          setStatus('请求失败');
+        } finally {
+          sendButton.disabled = false;
+          prompt.focus();
+        }
+      });
+
+      if (storage.key) {
+        setStatus('API Key 已配置', true);
+        if (!storage.session) storage.session = crypto.randomUUID();
+        restoreTranscript();
+      }
+    })();
+  </script>
+</body>
+</html>
