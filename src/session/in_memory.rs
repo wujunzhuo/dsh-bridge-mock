@@ -7,29 +7,9 @@ use uuid::Uuid;
 
 use crate::protocol::{RpcFrame, SessionEvent};
 
+use super::{SessionOutput, SessionOutputFactory, SessionPublisher};
+
 const EVENT_METHOD: &str = "session.event";
-
-#[async_trait]
-pub trait SessionOutput: Send + Sync {
-    fn publisher(&self) -> Arc<dyn SessionPublisher>;
-    fn subscribe(&self) -> broadcast::Receiver<RpcFrame>;
-    async fn history(&self, after_event_id: Option<&str>) -> Vec<SessionEvent>;
-}
-
-#[async_trait]
-pub trait SessionPublisher: Send + Sync {
-    fn publish(&self, frame: RpcFrame);
-    async fn publish_event(&self, session_id: &str, event: Value);
-}
-
-#[async_trait]
-pub trait SessionOutputFactory: Send + Sync {
-    async fn create(
-        &self,
-        tenant_id: &str,
-        session_id: &str,
-    ) -> Result<Arc<dyn SessionOutput>, String>;
-}
 
 #[derive(Default)]
 pub struct InMemorySessionOutputFactory;
@@ -86,6 +66,12 @@ impl SessionOutput for InMemorySessionOutput {
     }
 }
 
+impl Default for InMemorySessionOutput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 struct InMemorySessionPublisher {
     frames: broadcast::Sender<RpcFrame>,
     events: Arc<RwLock<Vec<SessionEvent>>>,
@@ -120,17 +106,14 @@ impl SessionPublisher for InMemorySessionPublisher {
     }
 }
 
-impl Default for InMemorySessionOutput {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use serde_json::json;
 
-    use super::{InMemorySessionOutput, SessionOutput, SessionOutputFactory};
+    use super::{InMemorySessionOutput, InMemorySessionOutputFactory};
+    use crate::session::{SessionOutput, SessionOutputFactory};
 
     #[tokio::test]
     async fn published_events_are_broadcast_and_kept_in_output_history() {
@@ -152,8 +135,8 @@ mod tests {
 
     #[tokio::test]
     async fn factory_creates_an_output_behind_the_trait() {
-        let factory = super::InMemorySessionOutputFactory;
+        let factory = InMemorySessionOutputFactory;
         let output = factory.create("tenant", "service-session").await.unwrap();
-        let _: std::sync::Arc<dyn SessionOutput> = output;
+        let _: Arc<dyn SessionOutput> = output;
     }
 }
