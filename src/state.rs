@@ -4,13 +4,13 @@ use arc_swap::ArcSwap;
 use tokio::sync::RwLock;
 
 use crate::{
-    backend::{DshSessionBackend, DshSessionBackendFactory},
+    backend::{SessionBackend, SessionBackendFactory},
     config::Tenant,
 };
 
 pub struct OwnedSession {
     pub tenant_id: String,
-    pub backend: Arc<dyn DshSessionBackend>,
+    pub backend: Arc<dyn SessionBackend>,
 }
 
 pub type SessionMap = Arc<RwLock<HashMap<String, OwnedSession>>>;
@@ -19,13 +19,13 @@ pub type SessionMap = Arc<RwLock<HashMap<String, OwnedSession>>>;
 pub struct AppState {
     pub tenants: Arc<ArcSwap<Vec<Tenant>>>,
     pub sessions: SessionMap,
-    factory: Arc<dyn DshSessionBackendFactory>,
+    factory: Arc<dyn SessionBackendFactory>,
 }
 
 impl AppState {
     pub fn new(
         tenants: Arc<ArcSwap<Vec<Tenant>>>,
-        factory: Arc<dyn DshSessionBackendFactory>,
+        factory: Arc<dyn SessionBackendFactory>,
     ) -> Self {
         Self {
             tenants,
@@ -38,7 +38,7 @@ impl AppState {
         &self,
         tenant_id: &str,
         session_id: &str,
-    ) -> Result<Arc<dyn DshSessionBackend>, String> {
+    ) -> Result<Arc<dyn SessionBackend>, String> {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get(session_id) {
             if session.tenant_id != tenant_id {
@@ -80,7 +80,9 @@ impl AppState {
             if session.tenant_id != tenant_id {
                 return Err("session belongs to another tenant".into());
             }
-            sessions.remove(session_id).expect("session was checked above")
+            sessions
+                .remove(session_id)
+                .expect("session was checked above")
         };
 
         session.backend.shutdown().await;

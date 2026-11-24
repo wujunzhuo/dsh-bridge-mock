@@ -11,9 +11,8 @@ use crate::{
 };
 
 #[async_trait]
-pub trait DshSessionBackend: Send + Sync {
+pub trait SessionBackend: Send + Sync {
     fn session_id(&self) -> &str;
-    fn process_id(&self) -> Option<u32>;
     fn is_running(&self) -> bool;
     async fn send(&self, frame: RpcFrame) -> Result<(), String>;
     fn subscribe(&self) -> broadcast::Receiver<RpcFrame>;
@@ -23,11 +22,11 @@ pub trait DshSessionBackend: Send + Sync {
 }
 
 #[async_trait]
-pub trait DshSessionBackendFactory: Send + Sync {
+pub trait SessionBackendFactory: Send + Sync {
     async fn start(
         &self,
         tenant_id: &str,
         session_id: &str,
         model: &ModelConfig,
-    ) -> Result<Arc<dyn DshSessionBackend>, String>;
+    ) -> Result<Arc<dyn SessionBackend>, String>;
 }

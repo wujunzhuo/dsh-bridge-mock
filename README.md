@@ -1,9 +1,9 @@
 # deepseek-harness 多租户后端示例
 
 Rust 项目只提供多租户认证和 `/api/remote.mux` WebSocket JSON-RPC 后端，不托管
-HTML/JS。每个会话由服务启动 `dsh --profile headless --json` 子进程；子进程退出后，
-同一会话后续请求通过 dsh 原生 Session ID 恢复。服务侧 `session_id` 关联租户，
-`process_id` 是最近一次 dsh 子进程的 OS PID。
+HTML/JS。当前示例通过子进程运行 `dsh --profile headless --json`，并在后续请求中恢复
+dsh 原生 session。服务侧 `session_id` 是稳定的会话标识并关联租户；后端运行时细节
+（例如子进程 PID 或容器 ID）不属于通用 session/backend 接口，也不会暴露给客户端。
 
 ## 配置模型
 

@@ -53,7 +53,6 @@ pub async fn ws_handler(
         if is_new {
             let info = SessionInfo {
                 session_id: backend.session_id().to_owned(),
-                process_id: backend.process_id(),
             };
             let init = RpcFrame::response(
                 Some(Value::String("init".into())),

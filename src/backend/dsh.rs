@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
 };
@@ -22,7 +22,7 @@ use crate::{
     protocol::{RpcFrame, SessionEvent},
 };
 
-use super::{DshSessionBackend, DshSessionBackendFactory};
+use super::{SessionBackend, SessionBackendFactory};
 
 const EVENT_METHOD: &str = "session.event";
 
@@ -92,31 +92,28 @@ pub struct DshSession {
     prompt_tx: mpsc::Sender<PromptRequest>,
     output: broadcast::Sender<RpcFrame>,
     events: Arc<RwLock<Vec<SessionEvent>>>,
-    process_id: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     stop: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 #[async_trait]
-impl DshSessionBackendFactory for DshBackendFactory {
+impl SessionBackendFactory for DshBackendFactory {
     async fn start(
         &self,
         tenant_id: &str,
         session_id: &str,
         model: &ModelConfig,
-    ) -> Result<Arc<dyn DshSessionBackend>, String> {
+    ) -> Result<Arc<dyn SessionBackend>, String> {
         let (prompt_tx, mut prompt_rx) = mpsc::channel::<PromptRequest>(16);
         let (output, _) = broadcast::channel::<RpcFrame>(128);
         let events = Arc::new(RwLock::new(Vec::new()));
         let dsh_session_id = Arc::new(RwLock::new(None));
-        let process_id = Arc::new(AtomicU32::new(0));
         let running = Arc::new(AtomicBool::new(true));
         let (stop_tx, mut stop_rx) = oneshot::channel();
 
         let task_output = output.clone();
         let task_events = events.clone();
         let task_dsh_session_id = dsh_session_id.clone();
-        let task_process_id = process_id.clone();
         let task_running = running.clone();
         let command = self.command.clone();
         let profile = self.profile.clone();
@@ -140,7 +137,6 @@ impl DshSessionBackendFactory for DshBackendFactory {
                             &task_output,
                             &task_events,
                             &task_dsh_session_id,
-                            &task_process_id,
                             &mut stop_rx,
                         ).await;
                         if !keep_running {
@@ -157,7 +153,6 @@ impl DshSessionBackendFactory for DshBackendFactory {
             prompt_tx,
             output,
             events,
-            process_id,
             running,
             stop: Mutex::new(Some(stop_tx)),
         }))
@@ -165,16 +160,9 @@ impl DshSessionBackendFactory for DshBackendFactory {
 }
 
 #[async_trait]
-impl DshSessionBackend for DshSession {
+impl SessionBackend for DshSession {
     fn session_id(&self) -> &str {
         &self.session_id
-    }
-
-    fn process_id(&self) -> Option<u32> {
-        match self.process_id.load(Ordering::Acquire) {
-            0 => None,
-            pid => Some(pid),
-        }
     }
 
     fn is_running(&self) -> bool {
@@ -239,7 +227,6 @@ async fn run_prompt(
     output: &broadcast::Sender<RpcFrame>,
     events: &Arc<RwLock<Vec<SessionEvent>>>,
     dsh_session_id: &Arc<RwLock<Option<String>>>,
-    process_id: &Arc<AtomicU32>,
     stop: &mut oneshot::Receiver<()>,
 ) -> bool {
     let response_id = request.id.clone();
@@ -286,13 +273,6 @@ async fn run_prompt(
         }
     };
 
-    let Some(pid) = child.id() else {
-        if let Some(id) = response_id.clone() {
-            let _ = output.send(RpcFrame::error(Some(id), "dsh process has no OS PID"));
-        }
-        return true;
-    };
-    process_id.store(pid, Ordering::Release);
     let stderr_task = child.stderr.take().map(|mut stderr| {
         tokio::spawn(async move {
             let mut bytes = Vec::new();
@@ -375,8 +355,6 @@ async fn run_prompt(
                         publish_dsh_event(
                             event,
                             service_session_id,
-                            pid,
-                            dsh_session_id,
                             output,
                             events,
                         ).await;
@@ -411,10 +389,7 @@ async fn run_prompt(
         let result = serde_json::json!({
             "ok": status_ok,
             "session_id": service_session_id,
-            "dsh_session_id": dsh_session_id.read().await.clone(),
-            "process_id": pid,
             "answer": final_answer.unwrap_or_default(),
-            "exit_code": status.ok().and_then(|status| status.code()),
         });
         let frame = if result["ok"] == true {
             RpcFrame::response(Some(id), result)
@@ -436,9 +411,9 @@ async fn run_prompt(
                 .rev()
                 .collect();
             let message = if detail.is_empty() {
-                format!("dsh process {pid} exited unsuccessfully")
+                "dsh command exited unsuccessfully".to_owned()
             } else {
-                format!("dsh process {pid} exited unsuccessfully:\n{detail}")
+                format!("dsh command exited unsuccessfully:\n{detail}")
             };
             RpcFrame::error(Some(id), message)
         };
@@ -450,8 +425,6 @@ async fn run_prompt(
 async fn publish_dsh_event(
     event: Value,
     service_session_id: &str,
-    process_id: u32,
-    dsh_session_id: &Arc<RwLock<Option<String>>>,
     output: &broadcast::Sender<RpcFrame>,
     events: &Arc<RwLock<Vec<SessionEvent>>>,
 ) {
@@ -467,8 +440,6 @@ async fn publish_dsh_event(
         payload: serde_json::json!({
             "event": event,
             "session_id": service_session_id,
-            "dsh_session_id": dsh_session_id.read().await.clone(),
-            "process_id": process_id,
         }),
     };
     events.write().await.push(session_event.clone());

@@ -511,13 +511,9 @@
         try {
           const client = await connect();
           const result = await client.rpc.request('session.prompt', { prompt: text });
-          const meta = [
-            result.process_id ? `process ${result.process_id}` : '',
-            result.dsh_session_id ? `session ${result.dsh_session_id}` : ''
-          ].filter(Boolean).join(' · ');
           const answer = result.answer || '任务已完成，但没有返回文本。';
-          finishAssistantReply(reply, answer, meta);
-          saveMessage('assistant', answer, meta);
+          finishAssistantReply(reply, answer);
+          saveMessage('assistant', answer);
           activeReply = null;
           setStatus('已连接', true);
         } catch (error) {

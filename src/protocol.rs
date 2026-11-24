@@ -61,6 +61,4 @@ pub struct SessionEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
     pub session_id: String,
-    /// PID is absent until the first headless task is launched.
-    pub process_id: Option<u32>,
 }
