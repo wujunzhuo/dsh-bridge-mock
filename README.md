@@ -4,6 +4,9 @@ Rust 项目只提供多租户认证和 `/api/remote.mux` WebSocket JSON-RPC 后�
 HTML/JS。当前示例通过子进程运行 `dsh --profile headless --json`，并在后续请求中恢复
 dsh 原生 session。服务侧 `session_id` 是稳定的会话标识并关联租户；后端运行时细节
 （例如子进程 PID 或容器 ID）不属于通用 session/backend 接口，也不会暴露给客户端。
+运行适配器位于 `src/backend/subprocess.rs`；后续可并列增加 `sandbox` backend。
+`SessionOutput`/`SessionOutputFactory` 是应用层存储接口，demo 使用内存实现；生产环境可注入
+数据库实现来持久化 session 元数据与 event 历史。运行中的 backend handle 仍由服务进程管理。
 
 ## 配置模型
 

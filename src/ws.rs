@@ -36,14 +36,17 @@ pub async fn ws_handler(
         .get("session_id")
         .cloned()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let backend = match state.get_or_start_session(&tenant_id, &session_id).await {
-        Ok(backend) => backend,
+    let session = match state.get_or_start_session(&tenant_id, &session_id).await {
+        Ok(session) => session,
         Err(error) if error == "session belongs to another tenant" => {
             eprintln!("[ws] rejected connection: session belongs to another tenant");
             return (StatusCode::FORBIDDEN, error).into_response();
         }
         Err(error) => return (StatusCode::BAD_GATEWAY, error).into_response(),
     };
+    let backend = session.backend;
+    let output = session.output;
+    let publisher = output.publisher();
     let session_state = state.clone();
     let session_tenant = tenant_id.clone();
     let session_id_for_close = session_id.clone();
@@ -52,7 +55,7 @@ pub async fn ws_handler(
         let (mut sink, mut stream) = socket.split();
         if is_new {
             let info = SessionInfo {
-                session_id: backend.session_id().to_owned(),
+                session_id: session_id.clone(),
             };
             let init = RpcFrame::response(
                 Some(Value::String("init".into())),
@@ -69,7 +72,7 @@ pub async fn ws_handler(
             }
         }
 
-        let mut output_rx = backend.subscribe();
+        let mut output_rx = output.subscribe();
         let send_task = tokio::spawn(async move {
             loop {
                 match output_rx.recv().await {
@@ -103,11 +106,11 @@ pub async fn ws_handler(
                     .await
                 {
                     Ok(()) => {
-                        backend.publish(RpcFrame::notification(
+                        publisher.publish(RpcFrame::notification(
                             "session.closed",
                             serde_json::json!({"session_id": session_id_for_close}),
                         ));
-                        backend.publish(RpcFrame::response(
+                        publisher.publish(RpcFrame::response(
                             frame.id,
                             serde_json::json!({
                                 "closed": true,
@@ -115,7 +118,7 @@ pub async fn ws_handler(
                             }),
                         ));
                     }
-                    Err(error) => backend.publish(RpcFrame::error(frame.id, error)),
+                    Err(error) => publisher.publish(RpcFrame::error(frame.id, error)),
                 }
             } else if frame.method.as_deref() == Some("session.attachment") {
                 let after = frame
@@ -125,11 +128,11 @@ pub async fn ws_handler(
                     .and_then(Value::as_str);
                 let response = RpcFrame::response(
                     frame.id,
-                    serde_json::json!({"events": backend.history(after).await}),
+                    serde_json::json!({"events": output.history(after).await}),
                 );
-                backend.publish(response);
+                publisher.publish(response);
             } else if let Err(error) = backend.send(frame.clone()).await {
-                backend.publish(RpcFrame::error(frame.id, error));
+                publisher.publish(RpcFrame::error(frame.id, error));
             }
         }
         send_task.abort();

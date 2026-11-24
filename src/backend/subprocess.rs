@@ -13,25 +13,20 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,
-    sync::{broadcast, mpsc, oneshot, Mutex, RwLock},
+    sync::{mpsc, oneshot, Mutex, RwLock},
 };
 use uuid::Uuid;
 
-use crate::{
-    config::ModelConfig,
-    protocol::{RpcFrame, SessionEvent},
-};
+use crate::{config::ModelConfig, protocol::RpcFrame, session::SessionPublisher};
 
 use super::{SessionBackend, SessionBackendFactory};
 
-const EVENT_METHOD: &str = "session.event";
-
-pub struct DshBackendFactory {
+pub struct SubprocessBackendFactory {
     command: String,
     profile: String,
 }
 
-impl DshBackendFactory {
+impl SubprocessBackendFactory {
     pub fn from_env() -> Result<Self, String> {
         Ok(Self {
             command: env::var("DSH_COMMAND").unwrap_or_else(|_| "dsh".into()),
@@ -87,32 +82,28 @@ impl Drop for TemporaryModelPatch {
     }
 }
 
-pub struct DshSession {
+pub struct SubprocessSession {
     session_id: String,
     prompt_tx: mpsc::Sender<PromptRequest>,
-    output: broadcast::Sender<RpcFrame>,
-    events: Arc<RwLock<Vec<SessionEvent>>>,
     running: Arc<AtomicBool>,
     stop: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 #[async_trait]
-impl SessionBackendFactory for DshBackendFactory {
+impl SessionBackendFactory for SubprocessBackendFactory {
     async fn start(
         &self,
         tenant_id: &str,
         session_id: &str,
         model: &ModelConfig,
+        output: Arc<dyn SessionPublisher>,
     ) -> Result<Arc<dyn SessionBackend>, String> {
         let (prompt_tx, mut prompt_rx) = mpsc::channel::<PromptRequest>(16);
-        let (output, _) = broadcast::channel::<RpcFrame>(128);
-        let events = Arc::new(RwLock::new(Vec::new()));
         let dsh_session_id = Arc::new(RwLock::new(None));
         let running = Arc::new(AtomicBool::new(true));
         let (stop_tx, mut stop_rx) = oneshot::channel();
 
-        let task_output = output.clone();
-        let task_events = events.clone();
+        let task_output = output;
         let task_dsh_session_id = dsh_session_id.clone();
         let task_running = running.clone();
         let command = self.command.clone();
@@ -134,8 +125,7 @@ impl SessionBackendFactory for DshBackendFactory {
                             &task_session_id,
                             &task_model,
                             request,
-                            &task_output,
-                            &task_events,
+                            task_output.as_ref(),
                             &task_dsh_session_id,
                             &mut stop_rx,
                         ).await;
@@ -148,11 +138,9 @@ impl SessionBackendFactory for DshBackendFactory {
             task_running.store(false, Ordering::Release);
         });
 
-        Ok(Arc::new(DshSession {
+        Ok(Arc::new(SubprocessSession {
             session_id: session_id.to_owned(),
             prompt_tx,
-            output,
-            events,
             running,
             stop: Mutex::new(Some(stop_tx)),
         }))
@@ -160,11 +148,7 @@ impl SessionBackendFactory for DshBackendFactory {
 }
 
 #[async_trait]
-impl SessionBackend for DshSession {
-    fn session_id(&self) -> &str {
-        &self.session_id
-    }
-
+impl SessionBackend for SubprocessSession {
     fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
@@ -189,26 +173,6 @@ impl SessionBackend for DshSession {
             .map_err(|_| format!("dsh session {} is not accepting prompts", self.session_id))
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<RpcFrame> {
-        self.output.subscribe()
-    }
-
-    fn publish(&self, frame: RpcFrame) {
-        let _ = self.output.send(frame);
-    }
-
-    async fn history(&self, after_event_id: Option<&str>) -> Vec<SessionEvent> {
-        let events = self.events.read().await;
-        match after_event_id {
-            Some(id) => events
-                .iter()
-                .position(|event| event.event_id == id)
-                .map(|index| events.iter().skip(index + 1).cloned().collect())
-                .unwrap_or_else(|| events.clone()),
-            None => events.clone(),
-        }
-    }
-
     async fn shutdown(&self) {
         if let Some(stop) = self.stop.lock().await.take() {
             let _ = stop.send(());
@@ -224,8 +188,7 @@ async fn run_prompt(
     service_session_id: &str,
     model: &ModelConfig,
     request: PromptRequest,
-    output: &broadcast::Sender<RpcFrame>,
-    events: &Arc<RwLock<Vec<SessionEvent>>>,
+    output: &dyn SessionPublisher,
     dsh_session_id: &Arc<RwLock<Option<String>>>,
     stop: &mut oneshot::Receiver<()>,
 ) -> bool {
@@ -234,7 +197,7 @@ async fn run_prompt(
         Ok(patch) => patch,
         Err(error) => {
             if let Some(id) = response_id {
-                let _ = output.send(RpcFrame::error(Some(id), error));
+                output.publish(RpcFrame::error(Some(id), error));
             }
             return true;
         }
@@ -264,7 +227,7 @@ async fn run_prompt(
         Ok(child) => child,
         Err(error) => {
             if let Some(id) = response_id.clone() {
-                let _ = output.send(RpcFrame::error(
+                output.publish(RpcFrame::error(
                     Some(id),
                     format!("failed to start {executable}: {error}"),
                 ));
@@ -291,7 +254,7 @@ async fn run_prompt(
                 let _ = task.await;
             }
             if let Some(id) = response_id.clone() {
-                let _ = output.send(RpcFrame::error(
+                output.publish(RpcFrame::error(
                     Some(id),
                     format!("failed to send prompt to dsh: {error}"),
                 ));
@@ -310,7 +273,7 @@ async fn run_prompt(
                 let _ = task.await;
             }
             if let Some(id) = response_id.clone() {
-                let _ = output.send(RpcFrame::error(Some(id), "failed to read dsh stdout"));
+                output.publish(RpcFrame::error(Some(id), "failed to read dsh stdout"));
             }
             return true;
         }
@@ -352,12 +315,7 @@ async fn run_prompt(
                                 .map(str::to_owned)
                                 .or_else(|| event.get("error").map(Value::to_string));
                         }
-                        publish_dsh_event(
-                            event,
-                            service_session_id,
-                            output,
-                            events,
-                        ).await;
+                        output.publish_event(service_session_id, event).await;
                     }
                     Ok(None) => break,
                     Err(error) => {
@@ -367,7 +325,7 @@ async fn run_prompt(
                             let _ = task.await;
                         }
                         if let Some(id) = response_id.clone() {
-                            let _ = output.send(RpcFrame::error(
+                            output.publish(RpcFrame::error(
                                 Some(id),
                                 format!("failed to read dsh output: {error}"),
                             ));
@@ -417,36 +375,9 @@ async fn run_prompt(
             };
             RpcFrame::error(Some(id), message)
         };
-        let _ = output.send(frame);
+        output.publish(frame);
     }
     true
-}
-
-async fn publish_dsh_event(
-    event: Value,
-    service_session_id: &str,
-    output: &broadcast::Sender<RpcFrame>,
-    events: &Arc<RwLock<Vec<SessionEvent>>>,
-) {
-    let ty = event
-        .get("type")
-        .or_else(|| event.get("event"))
-        .and_then(Value::as_str)
-        .unwrap_or("dsh.event")
-        .to_owned();
-    let session_event = SessionEvent {
-        event_id: Uuid::new_v4().to_string(),
-        ty,
-        payload: serde_json::json!({
-            "event": event,
-            "session_id": service_session_id,
-        }),
-    };
-    events.write().await.push(session_event.clone());
-    let _ = output.send(RpcFrame::notification(
-        EVENT_METHOD,
-        serde_json::to_value(session_event).unwrap_or(Value::Null),
-    ));
 }
 
 fn find_dsh_session_id(value: &Value) -> Option<String> {

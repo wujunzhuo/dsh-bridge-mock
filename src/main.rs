@@ -2,6 +2,7 @@ mod auth;
 mod backend;
 mod config;
 mod protocol;
+mod session;
 mod state;
 mod ws;
 
@@ -9,13 +10,18 @@ use std::{env, sync::Arc};
 
 use arc_swap::ArcSwap;
 use axum::{routing::get, Router};
-use backend::dsh::DshBackendFactory;
+use backend::subprocess::SubprocessBackendFactory;
+use session::InMemorySessionOutputFactory;
 use state::AppState;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tenants = Arc::new(ArcSwap::from_pointee(config::load_tenants()?));
-    let state = AppState::new(tenants, Arc::new(DshBackendFactory::from_env()?));
+    let state = AppState::new(
+        tenants,
+        Arc::new(SubprocessBackendFactory::from_env()?),
+        Arc::new(InMemorySessionOutputFactory),
+    );
     let app = Router::new()
         .route("/api/remote.mux", get(ws::ws_handler))
         .with_state(state.clone());
