@@ -70,6 +70,9 @@
     .send { display: inline-flex; align-items: center; gap: 8px; background: var(--accent); border-color: #a5d6b7; color: #1b4332; padding: 8px 12px; font-size: 12px; font-weight: 650; }
     .send:hover { background: #a5d6b7; border-color: #91cba5; }
     .send:disabled { color: #1b4332; }
+    .cancel { color: #b42318; border-color: #f0b8b2; background: #fff; }
+    .cancel:hover { color: #912018; border-color: #d98c84; background: #fff7f6; }
+    .cancel[hidden] { display: none; }
     footer { padding: 0 0 15px; text-align: center; color: #7a8593; font-size: 10px; }
     dialog { width: min(440px, calc(100vw - 32px)); padding: 0; border: 1px solid #d5dde6; border-radius: 14px; color: #1f2937; background: #fff; box-shadow: 0 24px 90px #33415533; }
     dialog::backdrop { background: #1f293766; backdrop-filter: blur(4px); }
@@ -113,7 +116,10 @@
           <textarea id="prompt" rows="2" placeholder="给 DeepSeek Harness 发消息…" aria-label="消息内容"></textarea>
           <div class="composer-bottom">
             <span class="hint">Enter 发送 · Shift + Enter 换行</span>
-            <button class="send" id="sendButton" type="submit"><span>发送</span><span aria-hidden="true">↑</span></button>
+            <div>
+              <button class="cancel" id="cancelButton" type="button" hidden>停止任务</button>
+              <button class="send" id="sendButton" type="submit"><span>发送</span><span aria-hidden="true">↑</span></button>
+            </div>
           </div>
         </form>
       </div>
@@ -152,6 +158,7 @@
       const messages = $('#messages');
       const status = $('#status');
       const sendButton = $('#sendButton');
+      const cancelButton = $('#cancelButton');
       const dialog = $('#settingsDialog');
       const apiKeyInput = $('#apiKey');
       const backendUrlInput = $('#backendUrl');
@@ -170,6 +177,11 @@
       let opening = null;
       let openingSocket = null;
       let activeReply = null;
+      let activeTurnId = null;
+      let attachedSession = null;
+      let attachmentPromise = null;
+      let bufferedSessionEvents = [];
+      const seenEventIds = new Set();
 
       function setStatus(text, ready = false) {
         status.textContent = text;
@@ -220,6 +232,26 @@
         return { article, body, content, activity, progress, text: '', tools: new Map() };
       }
 
+      function eventCursorKey() { return `dsh-demo-event-cursor:${storage.session}`; }
+      function activeTurnKey() { return `dsh-demo-active-turn:${storage.session}`; }
+      function completedTurnsKey() { return `dsh-demo-completed-turns:${storage.session}`; }
+      function completedTurnIds() {
+        try { return new Set(JSON.parse(localStorage.getItem(completedTurnsKey()) || '[]')); }
+        catch (_) { return new Set(); }
+      }
+      function saveTurnOutcome(turnId, role, text, meta) {
+        const ids = completedTurnIds();
+        if (ids.has(turnId)) return false;
+        ids.add(turnId);
+        localStorage.setItem(completedTurnsKey(), JSON.stringify([...ids].slice(-100)));
+        if (text) saveMessage(role, text, meta);
+        return true;
+      }
+      function updateCancelButton() {
+        cancelButton.hidden = !activeTurnId;
+        cancelButton.disabled = !activeTurnId;
+      }
+
       function stopProgress(reply) {
         reply.progress?.remove();
         reply.progress = null;
@@ -234,9 +266,73 @@
 
       function handleSessionEvent(params) {
         const sessionEvent = params;
-        if (!activeReply || sessionEvent?.payload?.session_id !== storage.session) return;
+        if (sessionEvent?.payload?.session_id !== storage.session) return;
+        if (sessionEvent.event_id) {
+          if (seenEventIds.has(sessionEvent.event_id)) return;
+          seenEventIds.add(sessionEvent.event_id);
+        }
         const event = sessionEvent.payload?.event;
         if (!event || typeof event !== 'object') return;
+        const turnId = sessionEvent.payload?.turn_id;
+
+        if (event.type === 'turn_status') {
+          if (event.status === 'started') {
+            activeTurnId = turnId;
+            localStorage.setItem(activeTurnKey(), turnId);
+            if (!activeReply) activeReply = beginAssistantReply();
+            activeReply.turnId = turnId;
+            setStatus('任务正在后台运行…', true);
+            updateCancelButton();
+          } else if (event.status === 'completed') {
+            const answer = String(event.answer || '');
+            const displayedAnswer = answer || '任务已完成，但没有返回文本。';
+            const meta = '自然结束';
+            if (activeReply?.turnId === turnId) {
+              finishAssistantReply(activeReply, displayedAnswer, meta);
+              activeReply.terminalStatus = 'completed';
+              activeReply = null;
+            } else if (!completedTurnIds().has(turnId)) {
+              addMessage('assistant', displayedAnswer, meta);
+            }
+            saveTurnOutcome(turnId, 'assistant', displayedAnswer, meta);
+            activeTurnId = null;
+            localStorage.removeItem(activeTurnKey());
+            setStatus('任务自然结束', true);
+            updateCancelButton();
+          } else if (event.status === 'cancelled') {
+            if (activeReply?.turnId === turnId) {
+              finishAssistantReply(activeReply, activeReply.text, '已取消');
+              activeReply.terminalStatus = 'cancelled';
+              saveTurnOutcome(turnId, 'assistant', activeReply.text || '任务已取消。', '已取消');
+              activeReply = null;
+            } else if (!completedTurnIds().has(turnId)) {
+              addMessage('assistant', '任务已取消。', '已取消');
+              saveTurnOutcome(turnId, 'assistant', '任务已取消。', '已取消');
+            }
+            activeTurnId = null;
+            localStorage.removeItem(activeTurnKey());
+            setStatus('任务已取消');
+            updateCancelButton();
+          } else if (event.status === 'failed') {
+            const message = String(event.message || '任务执行失败');
+            if (activeReply?.turnId === turnId) {
+              stopProgress(activeReply);
+              activeReply.terminalStatus = 'failed';
+              activeReply = null;
+            }
+            addMessage('error', message);
+            activeTurnId = null;
+            localStorage.removeItem(activeTurnKey());
+            setStatus('任务失败');
+            updateCancelButton();
+          }
+          if (sessionEvent.event_id) localStorage.setItem(eventCursorKey(), sessionEvent.event_id);
+          return;
+        }
+        if (!activeReply) {
+          if (sessionEvent.event_id) localStorage.setItem(eventCursorKey(), sessionEvent.event_id);
+          return;
+        }
 
         switch (event.type) {
           case 'thinking': {
@@ -317,6 +413,7 @@
           default:
             break;
         }
+        if (sessionEvent.event_id) localStorage.setItem(eventCursorKey(), sessionEvent.event_id);
       }
 
       function finishAssistantReply(reply, answer, meta) {
@@ -375,7 +472,10 @@
           errorListener: (message, error) => console.warn(message, error)
         });
         const rpc = new JSONRPCServerAndClient(server, client);
-        rpc.addMethod('session.event', handleSessionEvent);
+        rpc.addMethod('session.event', (params) => {
+          if (attachmentPromise) bufferedSessionEvents.push(params);
+          else handleSessionEvent(params);
+        });
         rpc.addMethod('session.closed', () => {});
 
         socket.addEventListener('message', (event) => {
@@ -440,15 +540,80 @@
         } else if (pendingSocket && pendingSocket.readyState < WebSocket.CLOSING) {
           pendingSocket.close();
         }
+        attachedSession = null;
+      }
+
+      async function ensureAttached() {
+        const client = await connect();
+        if (attachedSession === storage.session) return client;
+        if (attachmentPromise) {
+          await attachmentPromise;
+          return client;
+        }
+        const sessionId = storage.session;
+        const cursor = localStorage.getItem(eventCursorKey());
+        attachmentPromise = (async () => {
+          const result = await client.rpc.request('session.attachment', {
+            after_event_id: cursor || null
+          });
+          const events = result?.events || [];
+          let replay = events;
+          if (!cursor) {
+            const lastStatus = [...events].reverse().find((item) =>
+              item?.payload?.event?.type === 'turn_status'
+            );
+            if (lastStatus?.payload?.event?.status === 'started') {
+              const activeId = lastStatus.payload.turn_id;
+              replay = events.filter((item) => item?.payload?.turn_id === activeId);
+            } else {
+              const completed = completedTurnIds();
+              replay = events.filter((item) => {
+                const itemEvent = item?.payload?.event;
+                return itemEvent?.type === 'turn_status' &&
+                  ['completed', 'cancelled', 'failed'].includes(itemEvent.status) &&
+                  !completed.has(item?.payload?.turn_id);
+              });
+            }
+          } else {
+            activeTurnId = localStorage.getItem(activeTurnKey());
+            if (activeTurnId && !activeReply) {
+              activeReply = beginAssistantReply();
+              activeReply.turnId = activeTurnId;
+            }
+          }
+          for (const item of replay) handleSessionEvent(item);
+          if (!cursor) {
+            const lastEvent = events.at(-1);
+            if (lastEvent?.event_id) localStorage.setItem(eventCursorKey(), lastEvent.event_id);
+          }
+          const buffered = bufferedSessionEvents;
+          bufferedSessionEvents = [];
+          for (const item of buffered) handleSessionEvent(item);
+          attachedSession = sessionId;
+        })();
+        try {
+          await attachmentPromise;
+          return client;
+        } finally {
+          attachmentPromise = null;
+        }
       }
 
       function forgetLocalSession() {
         const oldSession = storage.session;
-        if (oldSession) localStorage.removeItem(`dsh-demo-transcript:${oldSession}`);
+        if (oldSession) {
+          localStorage.removeItem(`dsh-demo-transcript:${oldSession}`);
+          localStorage.removeItem(`dsh-demo-event-cursor:${oldSession}`);
+          localStorage.removeItem(`dsh-demo-active-turn:${oldSession}`);
+          localStorage.removeItem(`dsh-demo-completed-turns:${oldSession}`);
+        }
         storage.session = '';
         messages.replaceChildren();
         $('#intro').hidden = false;
         activeReply = null;
+        activeTurnId = null;
+        attachedSession = null;
+        updateCancelButton();
       }
 
       async function resetSession() {
@@ -502,12 +667,31 @@
       $('#newChatButton').addEventListener('click', async () => {
         try {
           await resetSession();
-          await connect();
+          await ensureAttached();
           setStatus('新对话', true);
           prompt.focus();
         } catch (error) {
           addMessage('error', `新对话失败：${error instanceof Error ? error.message : String(error)}`);
           setStatus('新对话失败');
+        }
+      });
+
+      cancelButton.addEventListener('click', async () => {
+        if (!activeTurnId) return;
+        const turnId = activeTurnId;
+        cancelButton.disabled = true;
+        cancelButton.textContent = '正在停止…';
+        try {
+          const client = await ensureAttached();
+          const result = await client.rpc.request('session.cancel', { turn_id: turnId });
+          if (!result?.accepted) setStatus('任务已结束', true);
+          else setStatus('已请求停止任务…', true);
+        } catch (error) {
+          addMessage('error', `停止任务失败：${error instanceof Error ? error.message : String(error)}`);
+          setStatus('停止任务失败');
+        } finally {
+          cancelButton.textContent = '停止任务';
+          updateCancelButton();
         }
       });
 
@@ -526,6 +710,10 @@
         event.preventDefault();
         const text = prompt.value.trim();
         if (!text) return;
+        if (activeTurnId) {
+          setStatus('当前任务仍在运行；请等待完成或停止任务');
+          return;
+        }
         if (!storage.key) {
           $('#settingsButton').click();
           return;
@@ -541,18 +729,39 @@
         activeReply = reply;
 
         try {
-          const client = await connect();
+          const client = await ensureAttached();
           const result = await client.rpc.request('session.prompt', { prompt: text });
-          const answer = result.answer || '任务已完成，但没有返回文本。';
-          finishAssistantReply(reply, answer);
-          saveMessage('assistant', answer);
-          activeReply = null;
-          setStatus('已连接', true);
+          if (result.cancelled) {
+            if (reply.terminalStatus !== 'cancelled') {
+              finishAssistantReply(reply, reply.text, '已取消');
+              saveTurnOutcome(result.turn_id || reply.turnId, 'assistant', reply.text || '任务已取消。', '已取消');
+            }
+            activeTurnId = null;
+            localStorage.removeItem(activeTurnKey());
+            activeReply = null;
+            setStatus('任务已取消');
+          } else {
+            const answer = result.answer || '任务已完成，但没有返回文本。';
+            if (reply.terminalStatus !== 'completed') {
+              finishAssistantReply(reply, answer, '自然结束');
+              saveTurnOutcome(result.turn_id || reply.turnId, 'assistant', answer, '自然结束');
+            }
+            activeReply = null;
+            activeTurnId = null;
+            localStorage.removeItem(activeTurnKey());
+            setStatus('任务自然结束', true);
+          }
+          updateCancelButton();
         } catch (error) {
+          if (activeReply === reply) activeReply = null;
           stopProgress(reply);
-          activeReply = null;
-          addMessage('error', error instanceof Error ? error.message : String(error));
-          setStatus('请求失败');
+          if (activeTurnId) {
+            addMessage('assistant', '客户端连接已断开；任务仍在后台运行，重新连接后可查看结果。');
+            setStatus('客户端已断开；任务仍在后台运行');
+          } else {
+            addMessage('error', error instanceof Error ? error.message : String(error));
+            setStatus('请求失败');
+          }
         } finally {
           sendButton.disabled = false;
           prompt.focus();
@@ -562,7 +771,12 @@
       if (storage.key) {
         setStatus('API Key 已配置', true);
         if (!storage.session) storage.session = crypto.randomUUID();
+        activeTurnId = localStorage.getItem(activeTurnKey());
+        updateCancelButton();
         restoreTranscript();
+        void ensureAttached().catch((error) => {
+          setStatus(`连接失败：${error instanceof Error ? error.message : String(error)}`);
+        });
       }
     })();
   </script>

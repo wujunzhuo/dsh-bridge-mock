@@ -100,25 +100,28 @@ pub async fn ws_handler(
             };
 
             if frame.method.as_deref() == Some("session.close") {
-                match session_state
-                    .destroy_session(&session_app, &session_id_for_close)
-                    .await
-                {
-                    Ok(()) => {
-                        publisher.publish(RpcFrame::notification(
-                            "session.closed",
-                            serde_json::json!({"session_id": session_id_for_close}),
-                        ));
-                        publisher.publish(RpcFrame::response(
-                            frame.id,
-                            serde_json::json!({
-                                "closed": true,
-                                "session_id": session_id_for_close,
-                            }),
-                        ));
+                let state = session_state.clone();
+                let app_id = session_app.clone();
+                let session_id = session_id_for_close.clone();
+                let publisher = publisher.clone();
+                tokio::spawn(async move {
+                    match state.destroy_session(&app_id, &session_id).await {
+                        Ok(()) => {
+                            publisher.publish(RpcFrame::notification(
+                                "session.closed",
+                                serde_json::json!({"session_id": session_id}),
+                            ));
+                            publisher.publish(RpcFrame::response(
+                                frame.id,
+                                serde_json::json!({
+                                    "closed": true,
+                                    "session_id": session_id,
+                                }),
+                            ));
+                        }
+                        Err(error) => publisher.publish(RpcFrame::error(frame.id, error)),
                     }
-                    Err(error) => publisher.publish(RpcFrame::error(frame.id, error)),
-                }
+                });
             } else if frame.method.as_deref() == Some("session.attachment") {
                 let after = frame
                     .params
@@ -136,6 +139,7 @@ pub async fn ws_handler(
                     .as_ref()
                     .and_then(|params| params.get("prompt"))
                     .and_then(Value::as_str)
+                    .map(str::to_owned)
                 else {
                     publisher.publish(RpcFrame::error(
                         frame.id,
@@ -143,26 +147,63 @@ pub async fn ws_handler(
                     ));
                     continue;
                 };
-                let result = state
-                    .run_turn(&app_id, &session_id, prompt.to_owned())
-                    .await;
-                let response = match result {
-                    Ok((turn_id, answer)) => RpcFrame::response(
+                let state = session_state.clone();
+                let app_id = session_app.clone();
+                let session_id = session_id_for_close.clone();
+                let publisher = publisher.clone();
+                tokio::spawn(async move {
+                    let response = match state.run_turn(&app_id, &session_id, prompt).await {
+                        Ok((turn_id, answer)) => RpcFrame::response(
+                            frame.id,
+                            serde_json::json!({
+                                "ok": true,
+                                "completion": "natural",
+                                "session_id": session_id,
+                                "turn_id": turn_id,
+                                "answer": answer,
+                            }),
+                        ),
+                        Err(crate::backend::TurnError::Cancelled) => RpcFrame::response(
+                            frame.id,
+                            serde_json::json!({"ok": false, "cancelled": true}),
+                        ),
+                        Err(crate::backend::TurnError::Failed(error)) => {
+                            RpcFrame::error(frame.id, error)
+                        }
+                    };
+                    publisher.publish(response);
+                });
+            } else if frame.method.as_deref() == Some("session.cancel") {
+                let turn_id = frame
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("turn_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let Some(turn_id) = turn_id else {
+                    publisher.publish(RpcFrame::error(
                         frame.id,
-                        serde_json::json!({
-                            "ok": true,
-                            "session_id": session_id,
-                            "turn_id": turn_id,
-                            "answer": answer,
-                        }),
-                    ),
-                    Err(error) => RpcFrame::error(frame.id, error),
+                        "session.cancel requires a string params.turn_id",
+                    ));
+                    continue;
                 };
-                publisher.publish(response);
+                let state = session_state.clone();
+                let app_id = session_app.clone();
+                let session_id = session_id_for_close.clone();
+                let publisher = publisher.clone();
+                tokio::spawn(async move {
+                    match state.cancel_turn(&app_id, &session_id, &turn_id).await {
+                        Ok(accepted) => publisher.publish(RpcFrame::response(
+                            frame.id,
+                            serde_json::json!({"accepted": accepted, "turn_id": turn_id}),
+                        )),
+                        Err(error) => publisher.publish(RpcFrame::error(frame.id, error)),
+                    }
+                });
             } else {
                 publisher.publish(RpcFrame::error(
                     frame.id,
-                    "only session.prompt, session.attachment, and session.close are supported",
+                    "only session.prompt, session.cancel, session.attachment, and session.close are supported",
                 ));
             }
         }

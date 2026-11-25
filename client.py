@@ -87,6 +87,8 @@ class TerminalUI:
         self.screen.nodelay(True)
         self.session_id = "connecting"
         self.status = "connected"
+        self.active_turn_id: str | None = None
+        self.active_turn_has_text = False
         self.entries: list[tuple[str, str]] = []
         self.input = ""
         self.scroll_offset = 0
@@ -193,7 +195,7 @@ class TerminalUI:
             self.screen.hline(separator, 0, curses.ACS_HLINE, cols)
         except curses.error:
             pass
-        self._write(rows - 2, 0, " Input · Enter sends · /clear resets session · /quit exits ", curses.A_BOLD)
+        self._write(rows - 2, 0, " Enter sends · /stop cancels · /clear resets · /quit exits ", curses.A_BOLD)
 
         input_prefix = "> "
         available = max(1, cols - len(input_prefix) - 2)
@@ -226,6 +228,7 @@ def event_to_ui(params: object, ui: TerminalUI) -> bool:
     event_type = event.get("type")
     if event_type == "text" and isinstance(event.get("text"), str):
         ui.append_assistant(event["text"])
+        ui.active_turn_has_text = ui.active_turn_id is not None
         return bool(event["text"])
     if event_type == "thinking" and event.get("text"):
         ui.add("thinking", event["text"])
@@ -245,6 +248,33 @@ def event_to_ui(params: object, ui: TerminalUI) -> bool:
         ui.add(kind, details)
     elif event_type == "status":
         ui.add("status", event.get("phase", "working"))
+    elif event_type == "turn_status":
+        status = event.get("status")
+        if status == "started":
+            ui.active_turn_id = payload.get("turn_id")
+            ui.active_turn_has_text = False
+            ui.status = "turn running"
+        elif status == "completed":
+            answer = event.get("answer")
+            if isinstance(answer, str) and answer and not ui.active_turn_has_text:
+                ui.append_assistant(answer)
+            ui.status = "turn completed naturally"
+            ui.add("status", "Turn completed naturally.")
+            ui.active_turn_id = None
+            ui.active_turn_has_text = False
+            ui.finish_turn()
+            return isinstance(answer, str) and bool(answer)
+        elif status == "cancelled":
+            ui.status = "turn cancelled"
+            ui.add("status", "Turn cancelled by client.")
+            ui.active_turn_id = None
+            ui.active_turn_has_text = False
+            ui.finish_turn()
+        elif status == "failed":
+            ui.status = "turn failed"
+            ui.active_turn_id = None
+            ui.active_turn_has_text = False
+            ui.finish_turn()
     return False
 
 
@@ -290,6 +320,7 @@ async def replay_session_history(socket, args, ui: TerminalUI) -> set[str]:
 
 async def run_session(socket, args, ui: TerminalUI, seen: set[str]) -> str:
     pending: dict[str, tuple[bool, float]] = {}
+    cancel_pending: set[str] = set()
     close_request_id = None
     clearing = False
 
@@ -326,6 +357,19 @@ async def run_session(socket, args, ui: TerminalUI, seen: set[str]) -> str:
                     ui.input = ""
                     if value == "/quit":
                         return "quit"
+                    elif value == "/stop":
+                        if ui.active_turn_id:
+                            cancel_id = f"cancel-{uuid.uuid4()}"
+                            cancel_pending.add(cancel_id)
+                            await socket.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": cancel_id,
+                                "method": "session.cancel",
+                                "params": {"turn_id": ui.active_turn_id},
+                            }))
+                            ui.status = "cancellation requested"
+                        else:
+                            ui.add("system", "No active turn to cancel.")
                     elif value == "/clear" and not clearing:
                         close_request_id = f"close-{uuid.uuid4()}"
                         clearing = True
@@ -360,6 +404,13 @@ async def run_session(socket, args, ui: TerminalUI, seen: set[str]) -> str:
                     return "closed"
                 elif frame.get("method") == "session.event":
                     params = frame.get("params")
+                    payload = params.get("payload") if isinstance(params, dict) else None
+                    event = payload.get("event") if isinstance(payload, dict) else None
+                    if isinstance(payload, dict) and isinstance(event, dict) and event.get("type") == "turn_status":
+                        if event.get("status") == "started":
+                            ui.active_turn_id = payload.get("turn_id")
+                        elif event.get("status") in {"completed", "cancelled", "failed"}:
+                            ui.active_turn_id = None
                     if display_once(params, seen=seen, ui=ui) and pending:
                         request_id = next(iter(pending))
                         _, started = pending[request_id]
@@ -371,11 +422,23 @@ async def run_session(socket, args, ui: TerminalUI, seen: set[str]) -> str:
                         ui.add("error", frame["error"].get("message", str(frame["error"])))
                     else:
                         result = frame.get("result") or {}
-                        if result.get("ok") is False:
+                        if result.get("cancelled"):
+                            ui.active_turn_id = None
+                            ui.status = "turn cancelled"
+                            if not any(kind == "status" and text == "Turn cancelled by client."
+                                       for kind, text in ui.entries[-3:]):
+                                ui.add("system", "Turn cancelled.")
+                        elif result.get("ok") is False:
                             ui.add("error", "Agent request failed")
                         elif result.get("answer") and not streamed:
                             ui.append_assistant(result["answer"])
                     ui.finish_turn()
+                elif frame.get("id") in cancel_pending:
+                    cancel_pending.discard(frame["id"])
+                    if "error" in frame:
+                        ui.add("error", frame["error"].get("message", str(frame["error"])))
+                    elif not (frame.get("result") or {}).get("accepted"):
+                        ui.add("system", "The turn has already ended.")
                 elif frame.get("id") == close_request_id and close_request_id:
                     if "error" in frame:
                         ui.add("error", frame["error"].get("message", str(frame["error"])))

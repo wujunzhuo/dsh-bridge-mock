@@ -7,11 +7,11 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::{
-    backend::{TurnRequest, TurnRunner},
+    backend::{TurnError, TurnRequest, TurnRunner},
     config::{App, ModelConfig},
     session::{SessionHistory, SessionHistoryFactory, SessionOutput, SessionOutputFactory},
     workspace::{SessionWorkspace, WorkspaceFactory},
@@ -24,7 +24,13 @@ struct OwnedSession {
     history: Arc<dyn SessionHistory>,
     workspace: Arc<dyn SessionWorkspace>,
     turn_lock: Mutex<()>,
+    active_turn: Mutex<Option<ActiveTurn>>,
     closed: AtomicBool,
+}
+
+struct ActiveTurn {
+    turn_id: String,
+    cancellation: watch::Sender<bool>,
 }
 
 #[derive(Clone)]
@@ -97,6 +103,7 @@ impl AppState {
             history,
             workspace,
             turn_lock: Mutex::new(()),
+            active_turn: Mutex::new(None),
             closed: AtomicBool::new(false),
         });
         sessions.insert(session_id.to_owned(), session);
@@ -108,26 +115,38 @@ impl AppState {
         app_id: &str,
         session_id: &str,
         prompt: String,
-    ) -> Result<(String, String), String> {
+    ) -> Result<(String, String), TurnError> {
         let session = {
             let sessions = self.sessions.read().await;
             let session = sessions
                 .get(session_id)
                 .cloned()
-                .ok_or_else(|| format!("unknown session {session_id}"))?;
+                .ok_or_else(|| TurnError::Failed(format!("unknown session {session_id}")))?;
             if session.app_id != app_id {
-                return Err("session belongs to another app".into());
+                return Err(TurnError::Failed("session belongs to another app".into()));
             }
             session
         };
         let _turn_guard = session.turn_lock.lock().await;
         if session.closed.load(Ordering::Acquire) {
-            return Err("session is closed".into());
+            return Err(TurnError::Failed("session is closed".into()));
         }
 
         let turn_id = Uuid::new_v4().to_string();
+        let (cancellation, cancellation_rx) = watch::channel(false);
+        *session.active_turn.lock().await = Some(ActiveTurn {
+            turn_id: turn_id.clone(),
+            cancellation,
+        });
         let history = session.history.messages().await;
         let output = session.output.publisher();
+        output
+            .publish_event(
+                session_id,
+                &turn_id,
+                serde_json::json!({"type": "turn_status", "status": "started"}),
+            )
+            .await;
         let result = self
             .runner
             .run_turn(
@@ -139,21 +158,95 @@ impl AppState {
                     workspace: session.workspace.clone(),
                     history,
                     prompt: prompt.clone(),
+                    cancellation: cancellation_rx,
                 },
-                output,
+                output.clone(),
             )
             .await;
-        let sync_result = session.workspace.sync().await;
-        let answer = match (result, sync_result) {
-            (Ok(answer), Ok(())) => answer,
-            (Ok(_), Err(error)) => return Err(format!("workspace sync failed: {error}")),
-            (Err(error), Ok(())) => return Err(error),
-            (Err(turn_error), Err(sync_error)) => {
-                return Err(format!("{turn_error}; workspace sync failed: {sync_error}"));
+        {
+            let mut active_turn = session.active_turn.lock().await;
+            if active_turn
+                .as_ref()
+                .is_some_and(|active| active.turn_id == turn_id)
+            {
+                *active_turn = None;
             }
+        }
+        let sync_result = session.workspace.sync().await;
+        match (result, sync_result) {
+            (Ok(answer), Ok(())) => {
+                session.history.append_turn(prompt, answer.clone()).await;
+                output
+                    .publish_event(
+                        session_id,
+                        &turn_id,
+                        serde_json::json!({
+                            "type": "turn_status",
+                            "status": "completed",
+                            "reason": "natural",
+                            "answer": answer,
+                        }),
+                    )
+                    .await;
+                Ok((turn_id, answer))
+            }
+            (Err(TurnError::Cancelled), Ok(())) => {
+                output
+                    .publish_event(
+                        session_id,
+                        &turn_id,
+                        serde_json::json!({"type": "turn_status", "status": "cancelled"}),
+                    )
+                    .await;
+                Err(TurnError::Cancelled)
+            }
+            (Ok(_), Err(error)) => {
+                let message = format!("workspace sync failed: {error}");
+                publish_turn_failure(&output, session_id, &turn_id, &message).await;
+                Err(TurnError::Failed(message))
+            }
+            (Err(TurnError::Failed(error)), Ok(())) => {
+                publish_turn_failure(&output, session_id, &turn_id, &error).await;
+                Err(TurnError::Failed(error))
+            }
+            (Err(TurnError::Cancelled), Err(error)) => {
+                let message = format!("turn cancelled; workspace sync failed: {error}");
+                publish_turn_failure(&output, session_id, &turn_id, &message).await;
+                Err(TurnError::Failed(message))
+            }
+            (Err(TurnError::Failed(turn_error)), Err(sync_error)) => {
+                let message = format!("{turn_error}; workspace sync failed: {sync_error}");
+                publish_turn_failure(&output, session_id, &turn_id, &message).await;
+                Err(TurnError::Failed(message))
+            }
+        }
+    }
+
+    pub async fn cancel_turn(
+        &self,
+        app_id: &str,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<bool, String> {
+        let session = {
+            let sessions = self.sessions.read().await;
+            let session = sessions
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| format!("unknown session {session_id}"))?;
+            if session.app_id != app_id {
+                return Err("session belongs to another app".into());
+            }
+            session
         };
-        session.history.append_turn(prompt, answer.clone()).await;
-        Ok((turn_id, answer))
+        let active_turn = session.active_turn.lock().await;
+        let Some(active_turn) = active_turn
+            .as_ref()
+            .filter(|active_turn| active_turn.turn_id == turn_id)
+        else {
+            return Ok(false);
+        };
+        Ok(active_turn.cancellation.send(true).is_ok())
     }
 
     pub async fn destroy_session(&self, app_id: &str, session_id: &str) -> Result<(), String> {
@@ -183,6 +276,25 @@ impl AppState {
     }
 }
 
+async fn publish_turn_failure(
+    output: &Arc<dyn crate::session::SessionPublisher>,
+    session_id: &str,
+    turn_id: &str,
+    message: &str,
+) {
+    output
+        .publish_event(
+            session_id,
+            turn_id,
+            serde_json::json!({
+                "type": "turn_status",
+                "status": "failed",
+                "message": message,
+            }),
+        )
+        .await;
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -192,10 +304,10 @@ mod tests {
 
     use arc_swap::ArcSwap;
     use async_trait::async_trait;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, Notify};
 
     use crate::{
-        backend::{TurnRequest, TurnRunner},
+        backend::{TurnError, TurnRequest, TurnRunner},
         config::{App, ModelConfig},
         session::{InMemorySessionHistoryFactory, InMemorySessionOutputFactory, SessionPublisher},
         workspace::LocalWorkspaceFactory,
@@ -215,13 +327,38 @@ mod tests {
             &self,
             request: TurnRequest,
             _output: Arc<dyn SessionPublisher>,
-        ) -> Result<String, String> {
+        ) -> Result<String, TurnError> {
             self.histories.lock().await.push(request.history);
             self.workspaces
                 .lock()
                 .unwrap()
                 .push(request.workspace.working_directory().to_owned());
             Ok(format!("reply to {}", request.prompt))
+        }
+    }
+
+    #[derive(Default)]
+    struct WaitingRunner {
+        started: Notify,
+    }
+
+    #[async_trait]
+    impl TurnRunner for WaitingRunner {
+        async fn run_turn(
+            &self,
+            request: TurnRequest,
+            _output: Arc<dyn SessionPublisher>,
+        ) -> Result<String, TurnError> {
+            self.started.notify_one();
+            let mut cancellation = request.cancellation;
+            loop {
+                if *cancellation.borrow() {
+                    return Err(TurnError::Cancelled);
+                }
+                if cancellation.changed().await.is_err() {
+                    return Err(TurnError::Failed("cancellation channel closed".into()));
+                }
+            }
         }
     }
 
@@ -273,5 +410,59 @@ mod tests {
 
         state.destroy_session("app-a", "session-a").await.unwrap();
         assert!(!workspace.exists());
+    }
+
+    #[tokio::test]
+    async fn client_cancellation_reaches_the_active_turn_and_is_published() {
+        let runner = Arc::new(WaitingRunner::default());
+        let state = AppState::new(
+            Arc::new(ArcSwap::from_pointee(vec![App {
+                api_key: "api-key".into(),
+                app_id: "app-a".into(),
+                name: "App A".into(),
+                llm: ModelConfig {
+                    base_url: "https://example.test/v1".into(),
+                    api_key: "model-key".into(),
+                    model: "model".into(),
+                },
+            }])),
+            runner.clone(),
+            Arc::new(InMemorySessionOutputFactory),
+            Arc::new(InMemorySessionHistoryFactory),
+            Arc::new(LocalWorkspaceFactory::new().unwrap()),
+        );
+        let session = state
+            .get_or_create_session("app-a", "session-cancel")
+            .await
+            .unwrap();
+        let mut events = session.output.subscribe();
+        let turn_state = state.clone();
+        let turn = tokio::spawn(async move {
+            turn_state
+                .run_turn("app-a", "session-cancel", "long task".into())
+                .await
+        });
+
+        runner.started.notified().await;
+        let started = events.recv().await.unwrap();
+        let turn_id = started.params.unwrap()["payload"]["turn_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(state
+            .cancel_turn("app-a", "session-cancel", &turn_id)
+            .await
+            .unwrap());
+        assert!(matches!(turn.await.unwrap(), Err(TurnError::Cancelled)));
+
+        let cancelled = events.recv().await.unwrap();
+        assert_eq!(
+            cancelled.params.unwrap()["payload"]["event"]["status"],
+            "cancelled"
+        );
+        assert!(!state
+            .cancel_turn("app-a", "session-cancel", &turn_id)
+            .await
+            .unwrap());
     }
 }

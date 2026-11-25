@@ -3,6 +3,7 @@ pub mod subprocess;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::sync::watch;
 
 use crate::{
     config::ModelConfig,
@@ -18,6 +19,25 @@ pub struct TurnRequest {
     pub workspace: Arc<dyn SessionWorkspace>,
     pub history: Vec<ConversationMessage>,
     pub prompt: String,
+    pub cancellation: watch::Receiver<bool>,
+}
+
+#[derive(Debug)]
+pub enum TurnError {
+    Cancelled,
+    Failed(String),
+}
+
+impl From<String> for TurnError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for TurnError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.to_owned())
+    }
 }
 
 /// Executes exactly one agent-loop turn; session history is owned by the application.
@@ -27,5 +47,5 @@ pub trait TurnRunner: Send + Sync {
         &self,
         request: TurnRequest,
         output: Arc<dyn SessionPublisher>,
-    ) -> Result<String, String>;
+    ) -> Result<String, TurnError>;
 }

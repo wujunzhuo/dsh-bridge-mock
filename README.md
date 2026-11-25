@@ -4,6 +4,8 @@
 
 - `app_id` 标识应用；应用 API Key 用于 WebSocket 认证。
 - 一个 session 可包含多个 turn。每个 turn 由 backend 独立运行；应用层维护 user/assistant 历史并作为后续上下文。
+- turn 在 `dsh` 发出 `final.reason.kind=completed` 且进程正常退出后自然结束；Web 的“停止任务”按钮和 CLI `/stop` 会取消当前 turn。断开客户端只断开连接，后台任务继续运行，重连后可从 session 事件历史查看结果。
+- 当前安装版 `dsh headless` 没有外部最大 agent 步数选项；`agent-loop.maxParallelToolCalls` 限制的是并行工具调用数，不是总步数。
 - session 的事件历史和消息由应用层接口管理；示例使用内存实现。每个 session 共享独立 workspace，示例使用临时目录，服务退出时清理。
 - backend、session 存储和 workspace 都有接口，便于替换为 sandbox、数据库或 blob 存储实现。
 
@@ -47,4 +49,4 @@ python client.py --api-key <app-api-key>
 python client.py --api-key <app-api-key> --session_id <session-id>
 ```
 
-命令行中的 `/quit` 只退出客户端；`/clear` 和网页的“新对话”会销毁当前 session/workspace，再开始新会话。
+命令行中的 `/quit` 只退出客户端；`/stop` 取消当前 turn；`/clear` 和网页的“新对话”会销毁当前 session/workspace，再开始新会话。
