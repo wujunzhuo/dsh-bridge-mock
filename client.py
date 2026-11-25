@@ -193,7 +193,7 @@ class TerminalUI:
             self.screen.hline(separator, 0, curses.ACS_HLINE, cols)
         except curses.error:
             pass
-        self._write(rows - 2, 0, " Input · Enter sends · /quit destroys session ", curses.A_BOLD)
+        self._write(rows - 2, 0, " Input · Enter sends · /clear resets session · /quit exits ", curses.A_BOLD)
 
         input_prefix = "> "
         available = max(1, cols - len(input_prefix) - 2)
@@ -288,9 +288,10 @@ async def replay_session_history(socket, args, ui: TerminalUI) -> set[str]:
         return seen
 
 
-async def run_session(socket, args, ui: TerminalUI, initial_prompt: str | None, seen: set[str]):
+async def run_session(socket, args, ui: TerminalUI, seen: set[str]) -> str:
     pending: dict[str, tuple[bool, float]] = {}
     close_request_id = None
+    clearing = False
 
     async def send_prompt(text: str) -> None:
         request_id = f"prompt-{uuid.uuid4()}"
@@ -303,11 +304,7 @@ async def run_session(socket, args, ui: TerminalUI, initial_prompt: str | None, 
             "params": {"prompt": text},
         }))
 
-    if initial_prompt:
-        await send_prompt(initial_prompt)
-
     receive_task = asyncio.create_task(socket.recv())
-    closing = False
     try:
         while True:
             key = ui.key()
@@ -327,21 +324,23 @@ async def run_session(socket, args, ui: TerminalUI, initial_prompt: str | None, 
                 elif key in ("\n", "\r"):
                     value = ui.input.strip()
                     ui.input = ""
-                    if value == "/quit" and not closing:
+                    if value == "/quit":
+                        return "quit"
+                    elif value == "/clear" and not clearing:
                         close_request_id = f"close-{uuid.uuid4()}"
-                        closing = True
-                        ui.status = "destroying session"
+                        clearing = True
+                        ui.status = "clearing session"
                         await socket.send(json.dumps({
                             "jsonrpc": "2.0",
                             "id": close_request_id,
                             "method": "session.close",
                             "params": {},
                         }))
-                    elif value and not closing:
+                    elif value and not clearing:
                         await send_prompt(value)
                 elif key in ("\x7f", "\b"):
                     ui.input = ui.input[:-1]
-                elif isinstance(key, str) and key.isprintable() and not closing:
+                elif isinstance(key, str) and key.isprintable() and not clearing:
                     ui.input += key
                 key = ui.key()
 
@@ -354,9 +353,11 @@ async def run_session(socket, args, ui: TerminalUI, initial_prompt: str | None, 
                     ui.session_id = frame["result"].get("session_id", ui.session_id)
                     ui.status = "ready"
                 elif frame.get("method") == "session.closed":
-                    ui.add("system", "Session destroyed.")
+                    if clearing:
+                        return "clear"
+                    ui.add("system", "Session was cleared by the server.")
                     ui.draw()
-                    return
+                    return "closed"
                 elif frame.get("method") == "session.event":
                     params = frame.get("params")
                     if display_once(params, seen=seen, ui=ui) and pending:
@@ -378,13 +379,11 @@ async def run_session(socket, args, ui: TerminalUI, initial_prompt: str | None, 
                 elif frame.get("id") == close_request_id and close_request_id:
                     if "error" in frame:
                         ui.add("error", frame["error"].get("message", str(frame["error"])))
-                        closing = False
+                        clearing = False
                         close_request_id = None
                         ui.status = "ready"
                     else:
-                        ui.add("system", "Session destroyed.")
-                        ui.draw()
-                        return
+                        return "clear"
 
             now = asyncio.get_running_loop().time()
             expired = [
@@ -402,28 +401,35 @@ async def run_session(socket, args, ui: TerminalUI, initial_prompt: str | None, 
 
 
 async def run(args, ui: TerminalUI) -> None:
-    prompt = args.prompt
-    if not prompt and not args.session_id:
-        raise ValueError("provide a prompt or attach with --session_id")
-
     try:
         import websockets
     except ImportError as error:
         raise RuntimeError("websockets is required; install it with: uv pip install websockets") from error
 
-    async with websockets.connect(build_url(args.url, args.api_key, args.session_id)) as socket:
-        seen: set[str] = set()
-        if args.session_id:
-            ui.session_id = args.session_id
-        if not prompt and args.session_id:
-            ui.status = "loading session history"
-            seen = await replay_session_history(socket, args, ui)
-        await run_session(socket, args, ui, prompt, seen)
+    session_id = args.session_id
+    while True:
+        async with websockets.connect(build_url(args.url, args.api_key, session_id)) as socket:
+            seen: set[str] = set()
+            if session_id:
+                ui.session_id = session_id
+                ui.status = "loading session history"
+                seen = await replay_session_history(socket, args, ui)
+            outcome = await run_session(socket, args, ui, seen)
+
+        if outcome != "clear":
+            return
+        session_id = None
+        ui.entries.clear()
+        ui.assistant_open = False
+        ui.input = ""
+        ui.scroll_offset = 0
+        ui.session_id = "connecting"
+        ui.status = "starting new session"
+        ui.add("system", "Session cleared. Starting a new session.")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Interactive dsh-bridge-mock client.")
-    parser.add_argument("prompt", nargs="?", help="initial prompt; later input stays interactive")
     parser.add_argument("--url", default="ws://127.0.0.1:8080/api/remote.mux")
     parser.add_argument("--api-key", default=os.environ.get("DSH_API_KEY"))
     parser.add_argument("--session_id", "--session-id", dest="session_id")
@@ -434,8 +440,6 @@ def parse_args() -> argparse.Namespace:
         parser.error("--api-key is required (or set DSH_API_KEY)")
     if args.timeout <= 0:
         parser.error("--timeout must be greater than zero")
-    if not args.prompt and not args.session_id:
-        parser.error("provide an initial prompt or --session_id")
     return args
 
 

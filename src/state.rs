@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn later_turns_receive_only_prior_user_and_assistant_messages() {
+    async fn turns_reuse_history_and_workspace_until_session_is_destroyed() {
         let runner = Arc::new(RecordingRunner::default());
         let state = AppState::new(
             Arc::new(ArcSwap::from_pointee(vec![App {
@@ -258,14 +258,20 @@ mod tests {
             .await
             .unwrap();
 
-        let histories = runner.histories.lock().await;
-        assert!(histories[0].is_empty());
-        assert_eq!(histories[1].len(), 2);
-        assert_eq!(histories[1][0].role.as_str(), "user");
-        assert_eq!(histories[1][0].content, "first question");
-        assert_eq!(histories[1][1].role.as_str(), "assistant");
-        assert_eq!(histories[1][1].content, "reply to first question");
-        let workspaces = runner.workspaces.lock().unwrap();
-        assert_eq!(workspaces[0], workspaces[1]);
+        let workspace = {
+            let histories = runner.histories.lock().await;
+            assert!(histories[0].is_empty());
+            assert_eq!(histories[1].len(), 2);
+            assert_eq!(histories[1][0].role.as_str(), "user");
+            assert_eq!(histories[1][0].content, "first question");
+            assert_eq!(histories[1][1].role.as_str(), "assistant");
+            assert_eq!(histories[1][1].content, "reply to first question");
+            let workspaces = runner.workspaces.lock().unwrap();
+            assert_eq!(workspaces[0], workspaces[1]);
+            workspaces[0].clone()
+        };
+
+        state.destroy_session("app-a", "session-a").await.unwrap();
+        assert!(!workspace.exists());
     }
 }

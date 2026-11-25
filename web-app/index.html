@@ -376,6 +376,7 @@
         });
         const rpc = new JSONRPCServerAndClient(server, client);
         rpc.addMethod('session.event', handleSessionEvent);
+        rpc.addMethod('session.closed', () => {});
 
         socket.addEventListener('message', (event) => {
           try {
@@ -441,6 +442,21 @@
         }
       }
 
+      async function resetSession() {
+        const oldSession = storage.session;
+        setStatus('正在清理当前 session…');
+        if (storage.key && oldSession) {
+          const client = await connect();
+          await client.rpc.request('session.close', {});
+        }
+        await closeConnection();
+        if (oldSession) localStorage.removeItem(`dsh-demo-transcript:${oldSession}`);
+        storage.session = '';
+        messages.replaceChildren();
+        $('#intro').hidden = false;
+        activeReply = null;
+      }
+
       $('#settingsButton').addEventListener('click', () => {
         apiKeyInput.value = storage.key;
         backendUrlInput.value = storage.endpoint;
@@ -448,7 +464,7 @@
         backendUrlInput.focus();
       });
       $('#cancelSettings').addEventListener('click', () => dialog.close());
-      $('#settingsForm').addEventListener('submit', (event) => {
+      $('#settingsForm').addEventListener('submit', async (event) => {
         event.preventDefault();
         const nextKey = apiKeyInput.value.trim();
         const nextEndpoint = backendUrlInput.value.trim();
@@ -459,10 +475,13 @@
         }
         backendUrlInput.setCustomValidity('');
         if (nextKey !== storage.key || nextEndpoint !== storage.endpoint) {
-          void closeConnection();
-          storage.session = '';
-          messages.replaceChildren();
-          $('#intro').hidden = false;
+          try {
+            await resetSession();
+          } catch (error) {
+            addMessage('error', `无法清理当前 session：${error instanceof Error ? error.message : String(error)}`);
+            setStatus('无法清理当前 session');
+            return;
+          }
         }
         storage.key = nextKey;
         storage.endpoint = nextEndpoint;
@@ -470,13 +489,15 @@
         setStatus('API Key 已保存', true);
         prompt.focus();
       });
-      $('#newChatButton').addEventListener('click', () => {
-        void closeConnection();
-        storage.session = '';
-        messages.replaceChildren();
-        $('#intro').hidden = false;
-        setStatus('新对话', true);
-        prompt.focus();
+      $('#newChatButton').addEventListener('click', async () => {
+        try {
+          await resetSession();
+          setStatus('新对话', true);
+          prompt.focus();
+        } catch (error) {
+          addMessage('error', `无法清理当前 session：${error instanceof Error ? error.message : String(error)}`);
+          setStatus('无法清理当前 session');
+        }
       });
 
       prompt.addEventListener('input', () => {

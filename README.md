@@ -36,11 +36,15 @@ python -m http.server 5173 --directory web-app
 
 ```sh
 uv pip install websockets
-python client.py --api-key <app-api-key> "你好"
+python client.py --api-key <app-api-key>
 ```
+
+客户端启动后在界面中输入问题。
 
 使用返回的 `session_id` 可继续会话：
 
 ```sh
-python client.py --api-key <app-api-key> --session_id <session-id> "继续刚才的话题"
+python client.py --api-key <app-api-key> --session_id <session-id>
 ```
+
+命令行中的 `/quit` 只退出客户端；`/clear` 和网页的“新对话”会销毁当前 session/workspace，再开始新会话。
