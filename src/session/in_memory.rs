@@ -7,9 +7,50 @@ use uuid::Uuid;
 
 use crate::protocol::{RpcFrame, SessionEvent};
 
-use super::{SessionOutput, SessionOutputFactory, SessionPublisher};
+use super::{
+    ConversationMessage, MessageRole, SessionHistory, SessionHistoryFactory, SessionOutput,
+    SessionOutputFactory, SessionPublisher,
+};
 
 const EVENT_METHOD: &str = "session.event";
+
+#[derive(Default)]
+pub struct InMemorySessionHistoryFactory;
+
+#[async_trait]
+impl SessionHistoryFactory for InMemorySessionHistoryFactory {
+    async fn create(
+        &self,
+        _app_id: &str,
+        _session_id: &str,
+    ) -> Result<Arc<dyn SessionHistory>, String> {
+        Ok(Arc::new(InMemorySessionHistory::default()))
+    }
+}
+
+#[derive(Default)]
+pub struct InMemorySessionHistory {
+    messages: RwLock<Vec<ConversationMessage>>,
+}
+
+#[async_trait]
+impl SessionHistory for InMemorySessionHistory {
+    async fn messages(&self) -> Vec<ConversationMessage> {
+        self.messages.read().await.clone()
+    }
+
+    async fn append_turn(&self, user_message: String, assistant_message: String) {
+        let mut messages = self.messages.write().await;
+        messages.push(ConversationMessage {
+            role: MessageRole::User,
+            content: user_message,
+        });
+        messages.push(ConversationMessage {
+            role: MessageRole::Assistant,
+            content: assistant_message,
+        });
+    }
+}
 
 #[derive(Default)]
 pub struct InMemorySessionOutputFactory;
@@ -18,7 +59,7 @@ pub struct InMemorySessionOutputFactory;
 impl SessionOutputFactory for InMemorySessionOutputFactory {
     async fn create(
         &self,
-        _tenant_id: &str,
+        _app_id: &str,
         _session_id: &str,
     ) -> Result<Arc<dyn SessionOutput>, String> {
         Ok(Arc::new(InMemorySessionOutput::new()))
@@ -83,7 +124,7 @@ impl SessionPublisher for InMemorySessionPublisher {
         let _ = self.frames.send(frame);
     }
 
-    async fn publish_event(&self, session_id: &str, event: Value) {
+    async fn publish_event(&self, session_id: &str, turn_id: &str, event: Value) {
         let ty = event
             .get("type")
             .or_else(|| event.get("event"))
@@ -96,6 +137,7 @@ impl SessionPublisher for InMemorySessionPublisher {
             payload: json!({
                 "event": event,
                 "session_id": session_id,
+                "turn_id": turn_id,
             }),
         };
         self.events.write().await.push(session_event.clone());
@@ -112,8 +154,8 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{InMemorySessionOutput, InMemorySessionOutputFactory};
-    use crate::session::{SessionOutput, SessionOutputFactory};
+    use super::{InMemorySessionHistory, InMemorySessionOutput, InMemorySessionOutputFactory};
+    use crate::session::{SessionHistory, SessionOutput, SessionOutputFactory};
 
     #[tokio::test]
     async fn published_events_are_broadcast_and_kept_in_output_history() {
@@ -122,7 +164,11 @@ mod tests {
         let mut receiver = output.subscribe();
 
         publisher
-            .publish_event("service-session", json!({"type": "text", "text": "hello"}))
+            .publish_event(
+                "service-session",
+                "turn-1",
+                json!({"type": "text", "text": "hello"}),
+            )
             .await;
 
         let frame = receiver.recv().await.expect("published event");
@@ -130,13 +176,27 @@ mod tests {
         let history = output.history(None).await;
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].payload["session_id"], "service-session");
+        assert_eq!(history[0].payload["turn_id"], "turn-1");
         assert_eq!(history[0].payload["event"]["text"], "hello");
     }
 
     #[tokio::test]
     async fn factory_creates_an_output_behind_the_trait() {
         let factory = InMemorySessionOutputFactory;
-        let output = factory.create("tenant", "service-session").await.unwrap();
+        let output = factory.create("app", "service-session").await.unwrap();
         let _: Arc<dyn SessionOutput> = output;
+    }
+
+    #[tokio::test]
+    async fn history_keeps_only_user_and_assistant_turn_messages() {
+        let history = InMemorySessionHistory::default();
+        history.append_turn("hello".into(), "hi there".into()).await;
+
+        let messages = history.messages().await;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role.as_str(), "user");
+        assert_eq!(messages[0].content, "hello");
+        assert_eq!(messages[1].role.as_str(), "assistant");
+        assert_eq!(messages[1].content, "hi there");
     }
 }

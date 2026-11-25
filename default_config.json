@@ -1,0 +1,12 @@
+[
+  {
+    "api_key": "sk-app-a",
+    "app_id": "app-a",
+    "name": "App A",
+    "llm": {
+      "base_url": "https://api.vivgrid.com/v1",
+      "api_key": "YOUR_VIVGRID_API_KEY",
+      "model": "hy4-flash"
+    }
+  }
+]

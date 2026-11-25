@@ -25,9 +25,9 @@ pub async fn ws_handler(
         eprintln!("[ws] rejected connection: missing api_key");
         return (StatusCode::UNAUTHORIZED, "missing api_key").into_response();
     };
-    let tenants = state.tenants.load();
-    let Some(tenant_id) = check_api_key(&tenants, api_key) else {
-        eprintln!("[ws] rejected connection: invalid tenant api_key");
+    let apps = state.apps.load();
+    let Some(app_id) = check_api_key(&apps, api_key) else {
+        eprintln!("[ws] rejected connection: invalid app api_key");
         return (StatusCode::UNAUTHORIZED, "invalid api_key").into_response();
     };
 
@@ -36,19 +36,18 @@ pub async fn ws_handler(
         .get("session_id")
         .cloned()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let session = match state.get_or_start_session(&tenant_id, &session_id).await {
+    let session = match state.get_or_create_session(&app_id, &session_id).await {
         Ok(session) => session,
-        Err(error) if error == "session belongs to another tenant" => {
-            eprintln!("[ws] rejected connection: session belongs to another tenant");
+        Err(error) if error == "session belongs to another app" => {
+            eprintln!("[ws] rejected connection: session belongs to another app");
             return (StatusCode::FORBIDDEN, error).into_response();
         }
         Err(error) => return (StatusCode::BAD_GATEWAY, error).into_response(),
     };
-    let backend = session.backend;
     let output = session.output;
     let publisher = output.publisher();
     let session_state = state.clone();
-    let session_tenant = tenant_id.clone();
+    let session_app = app_id.clone();
     let session_id_for_close = session_id.clone();
 
     ws.on_upgrade(move |socket| async move {
@@ -102,7 +101,7 @@ pub async fn ws_handler(
 
             if frame.method.as_deref() == Some("session.close") {
                 match session_state
-                    .destroy_session(&session_tenant, &session_id_for_close)
+                    .destroy_session(&session_app, &session_id_for_close)
                     .await
                 {
                     Ok(()) => {
@@ -131,8 +130,40 @@ pub async fn ws_handler(
                     serde_json::json!({"events": output.history(after).await}),
                 );
                 publisher.publish(response);
-            } else if let Err(error) = backend.send(frame.clone()).await {
-                publisher.publish(RpcFrame::error(frame.id, error));
+            } else if frame.method.as_deref() == Some("session.prompt") {
+                let Some(prompt) = frame
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("prompt"))
+                    .and_then(Value::as_str)
+                else {
+                    publisher.publish(RpcFrame::error(
+                        frame.id,
+                        "session.prompt requires a string params.prompt",
+                    ));
+                    continue;
+                };
+                let result = state
+                    .run_turn(&app_id, &session_id, prompt.to_owned())
+                    .await;
+                let response = match result {
+                    Ok((turn_id, answer)) => RpcFrame::response(
+                        frame.id,
+                        serde_json::json!({
+                            "ok": true,
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                            "answer": answer,
+                        }),
+                    ),
+                    Err(error) => RpcFrame::error(frame.id, error),
+                };
+                publisher.publish(response);
+            } else {
+                publisher.publish(RpcFrame::error(
+                    frame.id,
+                    "only session.prompt, session.attachment, and session.close are supported",
+                ));
             }
         }
         send_task.abort();

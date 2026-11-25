@@ -94,7 +94,7 @@
 <body>
   <div class="shell">
     <header>
-      <div class="brand"><div class="mark">✳</div><div>DeepSeek Harness<small>多租户会话示例</small></div></div>
+      <div class="brand"><div class="mark">✳</div><div>DeepSeek Harness<small>多应用会话示例</small></div></div>
       <div class="header-actions">
         <span class="status" id="status">未连接</span>
         <button id="settingsButton" type="button" title="设置 API Key">设置</button>
@@ -124,12 +124,12 @@
   <dialog id="settingsDialog">
     <form class="dialog-inner" id="settingsForm">
       <h2>连接设置</h2>
-      <p>填写 Rust 服务的 WebSocket 地址，以及 <code>tenants.json</code> 顶层 <code>api_key</code>（不是 <code>llm.api_key</code>）。</p>
+      <p>填写 Rust 服务的 WebSocket 地址，以及 <code>config.json</code> 顶层 <code>api_key</code>（不是 <code>llm.api_key</code>）。</p>
       <label for="backendUrl">WebSocket URL</label>
       <input id="backendUrl" type="text" inputmode="url" autocomplete="url" spellcheck="false" placeholder="ws://127.0.0.1:8080/api/remote.mux" required>
       <div style="height: 14px"></div>
       <label for="apiKey">API Key</label>
-      <input id="apiKey" type="password" autocomplete="off" placeholder="例如 sk-tenant-a" required>
+      <input id="apiKey" type="password" autocomplete="off" placeholder="例如 sk-app-a" required>
       <div class="dialog-actions">
         <button id="cancelSettings" type="button">取消</button>
         <button class="primary" type="submit">保存</button>
@@ -362,7 +362,7 @@
       function connect() {
         if (connection?.socket.readyState === WebSocket.OPEN) return Promise.resolve(connection);
         if (opening) return opening;
-        if (!storage.key) throw new Error('请先设置租户 API Key');
+        if (!storage.key) throw new Error('请先设置应用 API Key');
 
         const socket = new WebSocket(websocketUrl());
         const client = new JSONRPCClient((request) => {
@@ -403,11 +403,11 @@
             resolve(connection);
           }, { once: true });
           socket.addEventListener('error', () => {
-            setStatus('WebSocket 握手失败；请检查服务地址和租户 API Key');
+            setStatus('WebSocket 握手失败；请检查服务地址和应用 API Key');
           }, { once: true });
           socket.addEventListener('close', (event) => {
             reject(new Error(
-              `WebSocket 连接失败 (${event.code})。请确认后端可访问，并使用 tenants.json 顶层 api_key。`
+              `WebSocket 连接失败 (${event.code})。请确认后端可访问，并使用 config.json 顶层 api_key。`
             ));
           }, { once: true });
         });

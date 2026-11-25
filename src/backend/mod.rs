@@ -4,22 +4,28 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{config::ModelConfig, protocol::RpcFrame, session::SessionPublisher};
+use crate::{
+    config::ModelConfig,
+    session::{ConversationMessage, SessionPublisher},
+    workspace::SessionWorkspace,
+};
 
-#[async_trait]
-pub trait SessionBackend: Send + Sync {
-    fn is_running(&self) -> bool;
-    async fn send(&self, frame: RpcFrame) -> Result<(), String>;
-    async fn shutdown(&self);
+pub struct TurnRequest {
+    pub app_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub model: ModelConfig,
+    pub workspace: Arc<dyn SessionWorkspace>,
+    pub history: Vec<ConversationMessage>,
+    pub prompt: String,
 }
 
+/// Executes exactly one agent-loop turn; session history is owned by the application.
 #[async_trait]
-pub trait SessionBackendFactory: Send + Sync {
-    async fn start(
+pub trait TurnRunner: Send + Sync {
+    async fn run_turn(
         &self,
-        tenant_id: &str,
-        session_id: &str,
-        model: &ModelConfig,
+        request: TurnRequest,
         output: Arc<dyn SessionPublisher>,
-    ) -> Result<Arc<dyn SessionBackend>, String>;
+    ) -> Result<String, String>;
 }
