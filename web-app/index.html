@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light">
   <title>DeepSeek Harness · 对话</title>
   <style>
     :root {
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: #e8eaf0;
-      background: #101116;
+      color: #1f2937;
+      background: #f8fafc;
       font-synthesis: none;
       text-rendering: optimizeLegibility;
-      --muted: #9699a8;
-      --line: #292b35;
-      --panel: #17181f;
-      --accent: #a6e3a1;
+      --muted: #697586;
+      --line: #e2e8f0;
+      --panel: #ffffff;
+      --accent: #b7e4c7;
     }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; }
@@ -23,14 +23,14 @@
     .shell { min-height: 100vh; display: flex; flex-direction: column; max-width: 1040px; margin: 0 auto; padding: 0 24px; }
     header { height: 76px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
     .brand { display: flex; align-items: center; gap: 12px; font-weight: 650; letter-spacing: .01em; }
-    .mark { display: grid; place-items: center; width: 34px; height: 34px; color: #101116; background: var(--accent); border-radius: 11px; font-size: 19px; }
+    .mark { display: grid; place-items: center; width: 34px; height: 34px; color: #1b4332; background: var(--accent); border-radius: 11px; font-size: 19px; }
     .brand small { display: block; margin-top: 3px; color: var(--muted); font-weight: 450; font-size: 11px; letter-spacing: .04em; }
     .header-actions { display: flex; align-items: center; gap: 10px; }
     .status { color: var(--muted); font-size: 12px; }
     .status::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #777985; }
     .status.ready::before { background: var(--accent); }
-    button { border: 1px solid var(--line); color: #d8dae3; background: #1b1c24; border-radius: 9px; padding: 9px 13px; cursor: pointer; transition: .15s ease; }
-    button:hover { border-color: #555866; background: #22242d; }
+    button { border: 1px solid var(--line); color: #344054; background: #fff; border-radius: 9px; padding: 9px 13px; cursor: pointer; transition: .15s ease; }
+    button:hover { border-color: #b8c2cf; background: #f1f5f9; }
     button:disabled { opacity: .55; cursor: wait; }
     main { flex: 1; display: flex; flex-direction: column; width: 100%; max-width: 780px; margin: 0 auto; }
     .intro { text-align: center; padding: clamp(44px, 10vh, 100px) 0 34px; }
@@ -40,47 +40,47 @@
     #messages { flex: 1; padding: 4px 0 24px; }
     .message { display: flex; gap: 13px; margin: 22px 0; align-items: flex-start; animation: enter .18s ease-out; }
     @keyframes enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-    .avatar { flex: 0 0 31px; height: 31px; display: grid; place-items: center; border-radius: 10px; background: #252731; color: #b7bac8; font-size: 13px; }
-    .message.assistant .avatar { color: #11140f; background: var(--accent); }
+    .avatar { flex: 0 0 31px; height: 31px; display: grid; place-items: center; border-radius: 10px; background: #e9eef5; color: #526174; font-size: 13px; }
+    .message.assistant .avatar { color: #1b4332; background: var(--accent); }
     .message-body { min-width: 0; flex: 1; padding-top: 3px; }
-    .role { color: #9b9eab; font-size: 11px; margin-bottom: 7px; }
+    .role { color: #778395; font-size: 11px; margin-bottom: 7px; }
     .content { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: 14px; }
-    .message.user .content { color: #f0f0f4; }
-    .message.error .content { color: #f38ba8; }
-    .meta { margin-top: 9px; color: #777a88; font-size: 10px; }
+    .message.user .content { color: #263244; }
+    .message.error .content { color: #b42318; }
+    .meta { margin-top: 9px; color: #778395; font-size: 10px; }
     .activity-list { display: grid; gap: 8px; margin: 3px 0 10px; }
-    .reasoning-card, .tool-card { border: 1px solid #30323c; border-radius: 9px; background: #15161c; color: #b6b8c4; font-size: 12px; }
-    .reasoning-card summary, .tool-card summary { cursor: pointer; padding: 9px 11px; color: #aeb1bf; }
-    .reasoning-card[open] summary, .tool-card[open] summary { border-bottom: 1px solid #292b35; }
-    .event-body { padding: 9px 11px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; color: #a5a8b5; }
-    .event-body + .event-body { border-top: 1px solid #292b35; }
+    .reasoning-card, .tool-card { border: 1px solid #dce3ea; border-radius: 9px; background: #fff; color: #475467; font-size: 12px; }
+    .reasoning-card summary, .tool-card summary { cursor: pointer; padding: 9px 11px; color: #475467; }
+    .reasoning-card[open] summary, .tool-card[open] summary { border-bottom: 1px solid #e2e8f0; }
+    .event-body { padding: 9px 11px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; color: #526174; }
+    .event-body + .event-body { border-top: 1px solid #e2e8f0; }
     .tool-state { color: var(--muted); }
-    .tool-state.error { color: #f38ba8; }
+    .tool-state.error { color: #b42318; }
     .thinking { display: inline-flex; gap: 5px; padding: 9px 0; }
-    .thinking i { width: 5px; height: 5px; border-radius: 50%; background: #a6e3a1; opacity: .45; animation: pulse 1s ease-in-out infinite; }
+    .thinking i { width: 5px; height: 5px; border-radius: 50%; background: #5b9b70; opacity: .45; animation: pulse 1s ease-in-out infinite; }
     .thinking i:nth-child(2) { animation-delay: .15s; }
     .thinking i:nth-child(3) { animation-delay: .3s; }
     @keyframes pulse { 50% { opacity: 1; transform: translateY(-3px); } }
-    .composer-wrap { position: sticky; bottom: 0; padding: 12px 0 20px; background: linear-gradient(transparent, #101116 16%); }
-    .composer { border: 1px solid #363844; background: var(--panel); border-radius: 15px; padding: 12px 13px 10px 16px; box-shadow: 0 14px 40px #0003; }
-    textarea { display: block; width: 100%; min-height: 52px; max-height: 190px; resize: none; border: 0; outline: 0; color: #e8eaf0; background: transparent; line-height: 1.55; font-size: 14px; }
-    textarea::placeholder { color: #747785; }
+    .composer-wrap { position: sticky; bottom: 0; padding: 12px 0 20px; background: linear-gradient(transparent, #f8fafc 16%); }
+    .composer { border: 1px solid #d3dae3; background: var(--panel); border-radius: 15px; padding: 12px 13px 10px 16px; box-shadow: 0 14px 40px #33415514; }
+    textarea { display: block; width: 100%; min-height: 52px; max-height: 190px; resize: none; border: 0; outline: 0; color: #1f2937; background: transparent; line-height: 1.55; font-size: 14px; }
+    textarea::placeholder { color: #8b95a1; }
     .composer-bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .hint { color: #777a88; font-size: 10px; }
-    .send { display: inline-flex; align-items: center; gap: 8px; background: var(--accent); border-color: var(--accent); color: #10140e; padding: 8px 12px; font-size: 12px; font-weight: 650; }
-    .send:hover { background: #b7f0b2; border-color: #b7f0b2; }
-    .send:disabled { color: #10140e; }
-    footer { padding: 0 0 15px; text-align: center; color: #696c78; font-size: 10px; }
-    dialog { width: min(440px, calc(100vw - 32px)); padding: 0; border: 1px solid #383a45; border-radius: 14px; color: #e8eaf0; background: #191a21; box-shadow: 0 24px 90px #0009; }
-    dialog::backdrop { background: #05060ab8; backdrop-filter: blur(4px); }
+    .hint { color: #778395; font-size: 10px; }
+    .send { display: inline-flex; align-items: center; gap: 8px; background: var(--accent); border-color: #a5d6b7; color: #1b4332; padding: 8px 12px; font-size: 12px; font-weight: 650; }
+    .send:hover { background: #a5d6b7; border-color: #91cba5; }
+    .send:disabled { color: #1b4332; }
+    footer { padding: 0 0 15px; text-align: center; color: #7a8593; font-size: 10px; }
+    dialog { width: min(440px, calc(100vw - 32px)); padding: 0; border: 1px solid #d5dde6; border-radius: 14px; color: #1f2937; background: #fff; box-shadow: 0 24px 90px #33415533; }
+    dialog::backdrop { background: #1f293766; backdrop-filter: blur(4px); }
     .dialog-inner { padding: 22px; }
     .dialog-inner h2 { margin: 0 0 8px; font-size: 17px; }
     .dialog-inner p { margin: 0 0 18px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-    .dialog-inner label { display: block; margin-bottom: 7px; color: #c7c9d3; font-size: 12px; }
-    .dialog-inner input { width: 100%; padding: 11px 12px; border: 1px solid #393b46; border-radius: 8px; outline: 0; color: #eee; background: #111218; }
-    .dialog-inner input:focus { border-color: #7d9d79; }
+    .dialog-inner label { display: block; margin-bottom: 7px; color: #475467; font-size: 12px; }
+    .dialog-inner input { width: 100%; padding: 11px 12px; border: 1px solid #d3dae3; border-radius: 8px; outline: 0; color: #1f2937; background: #fff; }
+    .dialog-inner input:focus { border-color: #78a889; }
     .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
-    .primary { color: #11140f; background: var(--accent); border-color: var(--accent); font-weight: 650; }
+    .primary { color: #1b4332; background: var(--accent); border-color: #a5d6b7; font-weight: 650; }
     @media (max-width: 600px) {
       .shell { padding: 0 15px; }
       header { height: 64px; }
@@ -442,6 +442,15 @@
         }
       }
 
+      function forgetLocalSession() {
+        const oldSession = storage.session;
+        if (oldSession) localStorage.removeItem(`dsh-demo-transcript:${oldSession}`);
+        storage.session = '';
+        messages.replaceChildren();
+        $('#intro').hidden = false;
+        activeReply = null;
+      }
+
       async function resetSession() {
         const oldSession = storage.session;
         setStatus('正在清理当前 session…');
@@ -450,11 +459,7 @@
           await client.rpc.request('session.close', {});
         }
         await closeConnection();
-        if (oldSession) localStorage.removeItem(`dsh-demo-transcript:${oldSession}`);
-        storage.session = '';
-        messages.replaceChildren();
-        $('#intro').hidden = false;
-        activeReply = null;
+        forgetLocalSession();
       }
 
       $('#settingsButton').addEventListener('click', () => {
@@ -474,29 +479,35 @@
           return;
         }
         backendUrlInput.setCustomValidity('');
+        let oldSessionCleanupFailed = false;
         if (nextKey !== storage.key || nextEndpoint !== storage.endpoint) {
           try {
             await resetSession();
           } catch (error) {
-            addMessage('error', `无法清理当前 session：${error instanceof Error ? error.message : String(error)}`);
-            setStatus('无法清理当前 session');
-            return;
+            oldSessionCleanupFailed = true;
+            console.warn('Could not clean up the previous session while saving new settings:', error);
+            await closeConnection();
+            forgetLocalSession();
           }
         }
         storage.key = nextKey;
         storage.endpoint = nextEndpoint;
         dialog.close();
-        setStatus('API Key 已保存', true);
+        setStatus(
+          oldSessionCleanupFailed ? '设置已保存；旧会话未清理' : 'API Key 已保存',
+          true
+        );
         prompt.focus();
       });
       $('#newChatButton').addEventListener('click', async () => {
         try {
           await resetSession();
+          await connect();
           setStatus('新对话', true);
           prompt.focus();
         } catch (error) {
-          addMessage('error', `无法清理当前 session：${error instanceof Error ? error.message : String(error)}`);
-          setStatus('无法清理当前 session');
+          addMessage('error', `新对话失败：${error instanceof Error ? error.message : String(error)}`);
+          setStatus('新对话失败');
         }
       });
 
